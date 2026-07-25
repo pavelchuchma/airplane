@@ -248,7 +248,7 @@ class Hud:
             self._value_box(surface, x_axis, "---", side=-1)
         self._text(surface, "KMH", (x_axis - self.w * 0.03, self.cy + self.h * 0.31), font=self.font)
 
-    def draw_altitude(self, surface, alt_m):
+    def draw_altitude(self, surface, alt_m, agl_m=None):
         x_axis = self.w * 0.83
         if alt_m is not None:
             self._draw_vertical_tape(surface, x_axis, alt_m, side=1, unit_span=100, tick_step=10, label_step=50)
@@ -256,6 +256,15 @@ class Hud:
         else:
             self._value_box(surface, x_axis, "---", side=1)
         self._text(surface, "M", (x_axis + self.w * 0.03, self.cy + self.h * 0.31), font=self.font)
+        if agl_m is not None:
+            # height above terrain, F-16 radar-altitude style ("R" prefix);
+            # negative values are shown as-is - they expose a QNH/terrain error
+            self._text(
+                surface,
+                f"R {int(round(agl_m)):4d}",
+                (x_axis + self.w * 0.105, self.cy + self.h * 0.065),
+                anchor="center",
+            )
 
     # ------------------------------------------------------ roll indicator
 
@@ -310,5 +319,5 @@ class Hud:
         self.draw_flight_path_marker(surface, snap)
         self.draw_heading_tape(surface, snap.heading_deg)
         self.draw_airspeed(surface, snap.airspeed_kmh)
-        self.draw_altitude(surface, snap.altitude_m)
+        self.draw_altitude(surface, snap.altitude_m, snap.agl_m)
         self._text(surface, "NAV", (self.w * 0.11, self.h * 0.88), anchor="midleft")

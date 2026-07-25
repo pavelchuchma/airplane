@@ -14,6 +14,9 @@ z QGroundControl přes UDP.
 - **flight path marker** — kroužek s křidélky, poloha z vektoru rychlosti
   (GLOBAL_POSITION_INT); bez rychlostních dat (HW bridge) se místo něj kreslí boresight kříž
 - **roll indicator** — oblouk dole s ticky 0/±10/±20/±30/±45°
+- **výška nad terénem** (`R 123` pod rámečkem výšky, styl radar altimeter) —
+  baro AMSL výška mínus elevace terénu z ČÚZK DMR 5G gridu (viz níže);
+  bez pozice nebo mimo stažený grid se údaj nekreslí
 - ztráta telemetrie (>1 s) → blikající `NO TELEMETRY`; chybějící údaje → `---`
 
 ## Setup
@@ -40,6 +43,7 @@ python3 -m venv .venv
 | `--fullscreen` | — | start přes celou obrazovku |
 | `--fov` | 40 | vertikální FOV kamery [°] — měřítko pitch ladderu |
 | `--no-camera` | — | přeskočit kameru (test pattern) |
+| `--terrain` | `terrain/data/terrain.npz` | grid elevací terénu pro AGL (z `terrain/terrain_fetch.py`) |
 | `--dump-frame PATH` | — | debug: po 2 s uloží PNG snímek a skončí (headless) |
 
 Klávesy: `ESC`/`Q` konec, `F` fullscreen.
@@ -66,6 +70,25 @@ Enable + host `localhost:14445`.
 cd ../emulator && ./.venv/bin/python mpu6050_emulator.py --port 14445
 ```
 
+## Výška nad terénem (AGL)
+
+Terén se čte offline z předstažené mřížky ČÚZK **DMR 5G** (otevřená data,
+vertikální přesnost ~0,2 m; výšky Bpv ≈ AMSL). Stažení pro létací oblast
+(default: letiště ze sekce [site] v esp32/local.ini ±10 km, krok 5 m, ~20 MB
+do `terrain/data/terrain.npz`):
+
+```bash
+./.venv/bin/python terrain/terrain_fetch.py
+./.venv/bin/python terrain/terrain_fetch.py --lat 50.0 --lon 15.0 --radius-km 10
+```
+
+Skript si data vyžádá z veřejného ImageServeru ČÚZK rovnou ve WGS84 mřížce
+a po stažení ji ověří proti bodovým dotazům na server. Za letu pak
+`AGL = AMSL (baro) − elevace(lat, lon)` s bilineární interpolací; pozice
+z `GLOBAL_POSITION_INT`, výška preferenčně z `ALTITUDE.altitude_amsl`.
+
+Pozor: DMR 5G pokrývá jen ČR — nad slovenskou stranou hranice údaj zmizí.
+
 ### Reálný MPU-6050 (jen attitude)
 
 `../emulator/mpu6050_hw_bridge.py` posílá jen ATTITUDE — HUD pak ukazuje
@@ -78,3 +101,6 @@ flight path markeru je boresight kříž.
 - `hud.py` — F-16 HUD renderer
 - `telemetry.py` — MAVLink receiver (vlákno, thread-safe snapshot)
 - `camera.py` — USB kamera přes OpenCV/AVFoundation (vlákno, poslední frame)
+- `terrain/__init__.py` — elevace terénu z mřížky, bilineární lookup
+- `terrain/terrain_fetch.py` — jednorázové stažení mřížky z ČÚZK DMR 5G
+- `terrain/data/` — stažené mřížky (`terrain.npz`)

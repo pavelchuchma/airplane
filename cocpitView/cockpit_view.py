@@ -24,6 +24,7 @@ import pygame
 from camera import Camera
 from hud import Hud
 from telemetry import TelemetryReceiver
+from terrain import Terrain
 
 
 def main():
@@ -36,6 +37,11 @@ def main():
     parser.add_argument("--fullscreen", action="store_true", help="start fullscreen")
     parser.add_argument("--fov", type=float, default=40.0, help="camera vertical FOV in degrees, sets pitch ladder scale (default: 40)")
     parser.add_argument("--no-camera", action="store_true", help="skip camera capture (HUD over test pattern)")
+    parser.add_argument(
+        "--terrain",
+        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "terrain", "data", "terrain.npz"),
+        help="terrain grid from terrain/terrain_fetch.py (default: terrain/data/terrain.npz)",
+    )
     parser.add_argument("--dump-frame", metavar="PATH", help="debug: render for 2 s, save a PNG screenshot to PATH and exit")
     args = parser.parse_args()
 
@@ -50,6 +56,10 @@ def main():
     telemetry = TelemetryReceiver(port=args.mavlink_port)
     telemetry.start()
     print(f"Listening for MAVLink on udp:0.0.0.0:{args.mavlink_port}")
+
+    terrain = Terrain.load(args.terrain)
+    if terrain is None:
+        print(f"No terrain grid at '{args.terrain}' - AGL readout disabled (run terrain_fetch.py)")
 
     camera = None
     if not args.no_camera and not args.dump_frame:
@@ -85,7 +95,10 @@ def main():
                 screen.fill((28, 30, 32))
 
             dt = clock.tick(60) / 1000.0
-            hud.draw(screen, telemetry.snapshot(), dt)
+            snap = telemetry.snapshot()
+            if terrain is not None and snap.position is not None and snap.amsl_m is not None:
+                snap.agl_m = terrain.agl_m(*snap.position, snap.amsl_m)
+            hud.draw(screen, snap, dt)
             pygame.display.flip()
 
             if args.dump_frame and time.monotonic() - start > 2.0:

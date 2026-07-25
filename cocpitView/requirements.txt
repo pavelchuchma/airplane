@@ -3,3 +3,4 @@ opencv-python
 pymavlink
 numpy
 pyobjc-framework-AVFoundation
+tifffile  # only for terrain_fetch.py (CUZK DMR 5G download)

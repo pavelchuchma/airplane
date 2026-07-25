@@ -41,11 +41,19 @@ class TelemetrySnapshot:
     vd: float = 0.0
     gpi_heading_deg: float = 0.0
     gpi_rel_alt_m: float = 0.0
+    gpi_alt_amsl_m: float = 0.0
+    lat_deg: float = 0.0
+    lon_deg: float = 0.0
     gpi_ts: float = field(default=-math.inf)
 
     # ALTITUDE message
     alt_relative_m: float = 0.0
     alt_ts: float = field(default=-math.inf)
+    alt_amsl_m: float = 0.0
+    alt_amsl_ts: float = field(default=-math.inf)
+
+    # height above terrain, filled in by the main loop from a Terrain grid
+    agl_m: float | None = None
 
     heartbeat_ts: float = field(default=-math.inf)
 
@@ -89,6 +97,24 @@ class TelemetrySnapshot:
             return self.gpi_heading_deg % 360.0
         if self._fresh(self.attitude_ts):
             return math.degrees(self.yaw) % 360.0
+        return None
+
+    @property
+    def position(self):
+        """(lat_deg, lon_deg) from GLOBAL_POSITION_INT, or None."""
+        if not self._fresh(self.gpi_ts) or (self.lat_deg == 0.0 and self.lon_deg == 0.0):
+            return None
+        return (self.lat_deg, self.lon_deg)
+
+    @property
+    def amsl_m(self):
+        """Altitude above mean sea level in meters (baro preferred), or None."""
+        if self._fresh(self.alt_amsl_ts):
+            return self.alt_amsl_m
+        if self._fresh(self.gpi_ts):
+            return self.gpi_alt_amsl_m
+        if self._fresh(self.vfr_ts):
+            return self.vfr_alt_m
         return None
 
     @property
@@ -144,10 +170,16 @@ class TelemetryReceiver:
                     s.vd = msg.vz / 100.0
                     s.gpi_heading_deg = msg.hdg / 100.0
                     s.gpi_rel_alt_m = msg.relative_alt / 1000.0
+                    s.gpi_alt_amsl_m = msg.alt / 1000.0
+                    s.lat_deg = msg.lat / 1e7
+                    s.lon_deg = msg.lon / 1e7
                     s.gpi_ts = now
                 elif mtype == "ALTITUDE":
                     if not math.isnan(msg.altitude_relative):
                         s.alt_relative_m = msg.altitude_relative
                         s.alt_ts = now
+                    if not math.isnan(msg.altitude_amsl):
+                        s.alt_amsl_m = msg.altitude_amsl
+                        s.alt_amsl_ts = now
                 elif mtype == "HEARTBEAT":
                     s.heartbeat_ts = now
