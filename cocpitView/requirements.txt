@@ -1,5 +1,5 @@
 pygame
-opencv-python
+opencv-python-headless==4.12.0.88  # >=4.13 bundles libSDL2 (via ffmpeg avdevice), which clashes with pygame's SDL2 on macOS
 pymavlink
 numpy
 pyobjc-framework-AVFoundation
