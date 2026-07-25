@@ -3,4 +3,4 @@
 # (OTG camera "AV TO USB2.0", MAVLink on UDP :14445).
 # Extra arguments are passed through, e.g.: ./run.sh --fullscreen --fov 45
 cd "$(dirname "$0")"
-exec ./.venv/bin/python cockpit_view.py "$@"
+exec ./.venv/bin/python -m cockpitview "$@"

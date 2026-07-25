@@ -8,8 +8,8 @@ without QGC, point ../emulator/mpu6050_emulator.py --port 14445 at it
 directly.
 
 Usage:
-    ./.venv/bin/python cockpit_view.py
-    ./.venv/bin/python cockpit_view.py --camera 1 --fullscreen --fov 45
+    ./run.sh
+    ./.venv/bin/python -m cockpitview --camera 1 --fullscreen --fov 45
 
 Keys: ESC / Q quit, F toggles fullscreen.
 """
@@ -21,10 +21,10 @@ import time
 
 import pygame
 
-from camera import Camera
-from hud import Hud
-from telemetry import TelemetryReceiver
-from terrain import Terrain
+from .camera import Camera
+from .hud import Hud
+from .telemetry import TelemetryReceiver
+from .terrain import Terrain
 
 
 def main():
@@ -39,8 +39,8 @@ def main():
     parser.add_argument("--no-camera", action="store_true", help="skip camera capture (HUD over test pattern)")
     parser.add_argument(
         "--terrain",
-        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "terrain", "data", "terrain.npz"),
-        help="terrain grid from terrain/terrain_fetch.py (default: terrain/data/terrain.npz)",
+        default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "terrain.npz"),
+        help="terrain grid from cockpitview/terrain_fetch.py (default: data/terrain.npz)",
     )
     parser.add_argument("--dump-frame", metavar="PATH", help="debug: render for 2 s, save a PNG screenshot to PATH and exit")
     args = parser.parse_args()
@@ -59,7 +59,7 @@ def main():
 
     terrain = Terrain.load(args.terrain)
     if terrain is None:
-        print(f"No terrain grid at '{args.terrain}' - AGL readout disabled (run terrain_fetch.py)")
+        print(f"No terrain grid at '{args.terrain}' - AGL readout disabled (run python -m cockpitview.terrain_fetch)")
 
     camera = None
     if not args.no_camera and not args.dump_frame:

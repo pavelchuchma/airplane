@@ -4,16 +4,16 @@
 DMR 5G is the Czech national digital terrain model (open data, ~0.2 m
 vertical accuracy). It is served by a public ArcGIS ImageServer which can
 resample and reproject on the fly, so the grid is requested directly in
-WGS84 at the wanted step - the runtime lookup (terrain.py) then needs no
-GIS library at all, just numpy.
+WGS84 at the wanted step - the runtime lookup (cockpitview/terrain.py) then
+needs no GIS library at all, just numpy.
 
 The result is a .npz with elevations in int16 decimeters (Bpv heights,
 within ~0.4 m of AMSL - negligible against baro accuracy) plus the grid
 origin/steps in degrees. Default area: home airfield +- 10 km.
 
 Usage:
-    ./.venv/bin/python terrain/terrain_fetch.py
-    ./.venv/bin/python terrain/terrain_fetch.py --lat 50.0 --lon 15.0 --radius-km 10
+    ./.venv/bin/python -m cockpitview.terrain_fetch
+    ./.venv/bin/python -m cockpitview.terrain_fetch --lat 50.0 --lon 15.0 --radius-km 10
 """
 
 import argparse
@@ -32,7 +32,7 @@ SERVICE_URL = "https://ags.cuzk.cz/arcgis2/rest/services/dmr5g/ImageServer"
 METERS_PER_DEG_LAT = 111_320.0
 BAND_ROWS = 1000  # rows per HTTP request (server caps image height at 4100)
 NODATA = -32768  # int16 sentinel for "outside DMR 5G coverage"
-DEFAULT_OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "terrain.npz")
+DEFAULT_OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "terrain.npz")
 
 
 def fetch_band(lon_min, lon_max, lat_min, lat_max, width, height):
@@ -80,7 +80,7 @@ def main():
     parser.add_argument("--lon", type=float, default=15.000000, help="area center longitude")
     parser.add_argument("--radius-km", type=float, default=10.0, help="half-size of the square area (default: 10)")
     parser.add_argument("--step-m", type=float, default=5.0, help="grid step in meters (default: 5)")
-    parser.add_argument("--out", default=DEFAULT_OUT, help="output file (default: terrain/data/terrain.npz)")
+    parser.add_argument("--out", default=DEFAULT_OUT, help="output file (default: data/terrain.npz)")
     args = parser.parse_args()
 
     # One angular step for BOTH axes: exportImage silently rescales the bbox

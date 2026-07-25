@@ -1,4 +1,4 @@
-"""Terrain elevation lookup from a pre-fetched grid (see terrain/terrain_fetch.py).
+"""Terrain elevation lookup from a pre-fetched grid (see cockpitview/terrain_fetch.py).
 
 The grid is a regular WGS84 raster of int16 decimeters, so a query is two
 array index computations plus bilinear interpolation - cheap enough to run

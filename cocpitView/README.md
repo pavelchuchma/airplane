@@ -31,7 +31,7 @@ python3 -m venv .venv
 ```bash
 ./run.sh                        # venv python, OTG kamera, MAVLink :14445
 ./run.sh --fullscreen --fov 45  # argumenty se předávají dál
-./.venv/bin/python cockpit_view.py --no-camera   # jen HUD bez kamery
+./.venv/bin/python -m cockpitview --no-camera    # jen HUD bez kamery
 ```
 
 | Volba | Default | Význam |
@@ -43,7 +43,7 @@ python3 -m venv .venv
 | `--fullscreen` | — | start přes celou obrazovku |
 | `--fov` | 40 | vertikální FOV kamery [°] — měřítko pitch ladderu |
 | `--no-camera` | — | přeskočit kameru (test pattern) |
-| `--terrain` | `terrain/data/terrain.npz` | grid elevací terénu pro AGL (z `terrain/terrain_fetch.py`) |
+| `--terrain` | `data/terrain.npz` | grid elevací terénu pro AGL (z `cockpitview/terrain_fetch.py`) |
 | `--dump-frame PATH` | — | debug: po 2 s uloží PNG snímek a skončí (headless) |
 
 Klávesy: `ESC`/`Q` konec, `F` fullscreen.
@@ -58,7 +58,7 @@ Při prvním spuštění si macOS vyžádá povolení kamery pro terminál
 ## Zapojení telemetrie
 
 ```
-model / emulátor --MAVLink UDP:14550--> QGroundControl --forward UDP:14445--> cockpit_view.py
+model / emulátor --MAVLink UDP:14550--> QGroundControl --forward UDP:14445--> cockpit view
 ```
 
 V QGC: **Application Settings → MAVLink → MAVLink Forwarding**:
@@ -75,11 +75,11 @@ cd ../emulator && ./.venv/bin/python mpu6050_emulator.py --port 14445
 Terén se čte offline z předstažené mřížky ČÚZK **DMR 5G** (otevřená data,
 vertikální přesnost ~0,2 m; výšky Bpv ≈ AMSL). Stažení pro létací oblast
 (default: letiště ze sekce [site] v esp32/local.ini ±10 km, krok 5 m, ~20 MB
-do `terrain/data/terrain.npz`):
+do `data/terrain.npz`):
 
 ```bash
-./.venv/bin/python terrain/terrain_fetch.py
-./.venv/bin/python terrain/terrain_fetch.py --lat 50.0 --lon 15.0 --radius-km 10
+./.venv/bin/python -m cockpitview.terrain_fetch
+./.venv/bin/python -m cockpitview.terrain_fetch --lat 50.0 --lon 15.0 --radius-km 10
 ```
 
 Skript si data vyžádá z veřejného ImageServeru ČÚZK rovnou ve WGS84 mřížce
@@ -97,10 +97,11 @@ flight path markeru je boresight kříž.
 
 ## Soubory
 
-- `cockpit_view.py` — main, pygame render loop
-- `hud.py` — F-16 HUD renderer
-- `telemetry.py` — MAVLink receiver (vlákno, thread-safe snapshot)
-- `camera.py` — USB kamera přes OpenCV/AVFoundation (vlákno, poslední frame)
-- `terrain/__init__.py` — elevace terénu z mřížky, bilineární lookup
-- `terrain/terrain_fetch.py` — jednorázové stažení mřížky z ČÚZK DMR 5G
-- `terrain/data/` — stažené mřížky (`terrain.npz`)
+- `run.sh` — launcher (venv python, `python -m cockpitview`)
+- `cockpitview/__main__.py` — main, pygame render loop
+- `cockpitview/hud.py` — F-16 HUD renderer
+- `cockpitview/telemetry.py` — MAVLink receiver (vlákno, thread-safe snapshot)
+- `cockpitview/camera.py` — USB kamera přes OpenCV/AVFoundation (vlákno, poslední frame)
+- `cockpitview/terrain.py` — elevace terénu z mřížky, bilineární lookup
+- `cockpitview/terrain_fetch.py` — jednorázové stažení mřížky z ČÚZK DMR 5G
+- `data/` — stažené mřížky (`terrain.npz`)
