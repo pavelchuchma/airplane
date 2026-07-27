@@ -49,8 +49,10 @@ def main():
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
     pygame.init()
-    flags = pygame.FULLSCREEN if args.fullscreen else pygame.RESIZABLE
-    screen = pygame.display.set_mode((args.width, args.height), flags)
+    # SCALED keeps the drawing surface at the logical (width, height) resolution
+    # regardless of the actual window size; SDL scales it to the window on the GPU.
+    flags = (pygame.FULLSCREEN if args.fullscreen else pygame.RESIZABLE) | pygame.SCALED
+    screen = pygame.display.set_mode((args.width, args.height), flags, vsync=1)
     pygame.display.set_caption("Cockpit View")
 
     telemetry = TelemetryReceiver(port=args.mavlink_port)
