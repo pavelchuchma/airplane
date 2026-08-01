@@ -246,7 +246,6 @@ class Hud:
             self._value_box(surface, x_axis, f"{int(round(kmh)):3d}", side=-1)
         else:
             self._value_box(surface, x_axis, "---", side=-1)
-        self._text(surface, "KMH", (x_axis - self.w * 0.03, self.cy + self.h * 0.31), font=self.font)
 
     def draw_altitude(self, surface, alt_m, agl_m=None, climb_mps=None):
         x_axis = self.w * 0.83
@@ -255,21 +254,20 @@ class Hud:
             self._value_box(surface, x_axis, f"{int(round(alt_m)):4d}", side=1)
         else:
             self._value_box(surface, x_axis, "---", side=1)
-        self._text(surface, "M", (x_axis + self.w * 0.03, self.cy + self.h * 0.31), font=self.font)
-        if climb_mps is not None:
-            # vario in m/s (unitless on purpose), right under the altitude box
-            self._text(
-                surface,
-                f"{climb_mps:+.1f}",
-                (x_axis + self.w * 0.105, self.cy + self.h * 0.065),
-                anchor="center",
-            )
         if agl_m is not None:
             # height above terrain, F-16 radar-altitude style ("R" prefix);
             # negative values are shown as-is - they expose a QNH/terrain error
             self._text(
                 surface,
                 f"R {int(round(agl_m)):4d}",
+                (x_axis + self.w * 0.105, self.cy + self.h * 0.065),
+                anchor="center",
+            )
+        if climb_mps is not None:
+            # vario in m/s (unitless on purpose), under the radar altitude
+            self._text(
+                surface,
+                f"{climb_mps:+.1f}",
                 (x_axis + self.w * 0.105, self.cy + self.h * 0.105),
                 anchor="center",
             )
