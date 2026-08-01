@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """
 Reads CSV lines (roll,pitch,yaw,rollspeed,pitchspeed,yawspeed [rad, rad/s])
-from the Arduino Nano + MPU-6050 serial link (see ../arduinoNano/) and
+from the air ESP32 + MPU-6050 serial link (see ../esp32/src/air/) and
 forwards them to QGroundControl as MAVLink HEARTBEAT/ATTITUDE over UDP - the
 physical counterpart of mpu6050_emulator.py (no GPS/altitude, since a bare
 MPU-6050 can't measure those).
+
+By default the serial port is resolved by physical USB location (the boards'
+clone CP2102s share one serial number, so port names are ambiguous — see
+../esp32/tools/select_port.py). The location is read from `custom_usb_location`
+of [env:air] in ../esp32/platformio.ini.
 
 Usage:
     ./.venv/bin/python mpu6050_hw_bridge.py
@@ -12,12 +17,33 @@ Usage:
 """
 
 import argparse
+import configparser
+import pathlib
+import sys
 import time
 
 import serial
+from serial.tools import list_ports
 from pymavlink import mavutil
 
 HEARTBEAT_PERIOD_S = 1.0
+PLATFORMIO_INI = pathlib.Path(__file__).resolve().parent.parent / "esp32" / "platformio.ini"
+
+
+def find_air_port():
+    """Resolve the air ESP32's serial port by its USB location."""
+    config = configparser.ConfigParser(inline_comment_prefixes=(";",))
+    config.read(PLATFORMIO_INI)
+    location = config.get("env:air", "custom_usb_location", fallback="").strip()
+    if not location:
+        sys.exit(f"custom_usb_location not set for [env:air] in {PLATFORMIO_INI}")
+    matches = [p.device for p in list_ports.comports() if p.location and p.location.startswith(location)]
+    if len(matches) != 1:
+        sys.exit(
+            f"expected exactly one serial device at USB location {location}, found: "
+            f"{', '.join(matches) or 'none'} (is the air board plugged into its assigned port?)"
+        )
+    return matches[0]
 
 
 def parse_line(line):
@@ -33,7 +59,9 @@ def parse_line(line):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
-        "--serial-port", default="/dev/cu.usbserial-21230", help="Arduino serial port (default: /dev/cu.usbserial-21230)"
+        "--serial-port",
+        default=None,
+        help="serial port of the air ESP32 (default: resolved by USB location from esp32/platformio.ini)",
     )
     parser.add_argument("--baud", type=int, default=115200, help="Serial baud rate (default: 115200)")
     parser.add_argument("--host", default="127.0.0.1", help="QGroundControl IP address (default: 127.0.0.1)")
@@ -41,14 +69,15 @@ def main():
     parser.add_argument("--system-id", type=int, default=1, help="MAVLink system id of the vehicle")
     args = parser.parse_args()
 
-    ser = serial.Serial(args.serial_port, args.baud, timeout=1.0)
+    serial_port = args.serial_port or find_air_port()
+    ser = serial.Serial(serial_port, args.baud, timeout=1.0)
     conn = mavutil.mavlink_connection(
         f"udpout:{args.host}:{args.port}",
         source_system=args.system_id,
         source_component=mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1,
     )
 
-    print(f"Reading {args.serial_port} @ {args.baud} baud, sending MAVLink to {args.host}:{args.port}")
+    print(f"Reading {serial_port} @ {args.baud} baud, sending MAVLink to {args.host}:{args.port}")
     print("Ctrl+C to stop.\n")
 
     start = time.monotonic()

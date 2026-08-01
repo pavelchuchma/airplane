@@ -22,6 +22,10 @@ decisions. Keep it updated when the design evolves.
 ## Commands
 
 - Firmware build/upload: `cd esp32 && pio run -e air -t upload` (or `-e ground`)
+- Both devkits have clone CP2102s with the same USB serial number; upload and
+  monitor ports are resolved by physical USB location (`esp32/tools/select_port.py`,
+  `custom_usb_location` in platformio.ini) — each board stays in its assigned
+  USB port.
 - Ground app: `cocpitView/run.sh`
 
 ## Rules
@@ -35,7 +39,10 @@ decisions. Keep it updated when the design evolves.
 
 ## Current state (update as work progresses)
 
-- `esp32/` is a skeleton only — empty setup/loop, no implementation.
+- `esp32/src/air` is a 1:1 port of the arduinoNano MPU-6050 firmware: the air
+  ESP32 connects directly to the PC over USB serial (CSV lines, 115200 baud),
+  no ESP-NOW yet. `esp32/src/ground` is still an empty skeleton.
 - Telemetry still flows the old way: ESP → `mpu6050_hw_bridge.py` → QGC →
   cocpitView. Target flow (see architecture.md) is not built yet.
-- Next step: convert the arduinoNano MPU-6050 firmware into `esp32/src/air`.
+- Next step: move telemetry onto the ESP-NOW link (air → ground bridge →
+  cocpitView) using the protocol structs in `esp32/lib/protocol/`.
