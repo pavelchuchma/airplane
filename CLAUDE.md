@@ -61,6 +61,16 @@ decisions. Keep it updated when the design evolves.
   line; position enables its flight-path marker and AGL. The old standalone
   `emulator/mpu6050_*.py` scripts are gone; the flight-profile emulator lives
   in the `cockpitview` package.
+- Altitude display ignores GPS altitude entirely (its vertical noise is tens
+  of meters). `cockpitview/altimeter.py` calibrates the baro once on the
+  ground: after the first good 3D fix while stationary it locks
+  `offset = terrain(lat,lon) − baro_rel` against the CUZK DMR 5G grid
+  (`data/terrain.npz`, fetched by `cockpitview/terrain_fetch.py`). The HUD
+  altitude box then shows baro AMSL (`---` until calibrated; falls back to
+  baro-relative when no terrain grid is loaded) and `R` is
+  `baro AMSL − terrain(GPS position)`. QGC gets the calibrated altitude too
+  (ALTITUDE.altitude_amsl + GLOBAL_POSITION_INT.alt); raw GPS altitude stays
+  in GPS_RAW_INT.
 - Next steps: move telemetry onto the ESP-NOW link (air → ground bridge →
   cocpitView) using the protocol structs in `esp32/lib/protocol/`;
   course-over-ground yaw correction above a groundspeed threshold.

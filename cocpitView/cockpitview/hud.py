@@ -256,7 +256,8 @@ class Hud:
             self._value_box(surface, x_axis, "---", side=1)
         if agl_m is not None:
             # height above terrain, F-16 radar-altitude style ("R" prefix);
-            # negative values are shown as-is - they expose a QNH/terrain error
+            # negative values are shown as-is - they expose baro drift or a
+            # terrain-grid error (0 on the ground right after calibration)
             self._text(
                 surface,
                 f"R {int(round(agl_m)):4d}",
@@ -341,6 +342,6 @@ class Hud:
         self.draw_flight_path_marker(surface, snap)
         self.draw_heading_tape(surface, snap.heading_deg)
         self.draw_airspeed(surface, snap.airspeed_kmh)
-        self.draw_altitude(surface, snap.altitude_m, snap.agl_m, snap.vario_mps)
+        self.draw_altitude(surface, snap.display_alt_m, snap.agl_m, snap.vario_mps)
         self._text(surface, "NAV", (self.w * 0.11, self.h * 0.88), anchor="midleft")
         self.draw_gps_status(surface, snap.gps_status)

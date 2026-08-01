@@ -60,7 +60,13 @@ UART2: the firmware configures it at every boot (flash-less chip — 5 Hz nav
 rate, airborne dynamic model, RMC+GGA only) and appends position/groundspeed/
 course/fix-quality to the CSV; cocpitView forwards them as GPS_RAW_INT +
 GLOBAL_POSITION_INT, which gives QGC the map position and the HUD its
-flight-path marker, AGL readout and a GPS fix/satellite status line. The
+flight-path marker, AGL readout and a GPS fix/satellite status line.
+Altitude display never uses the (noisy, tens of meters) GPS altitude:
+cocpitView calibrates the baro once on the ground against the local terrain
+elevation from a pre-fetched CUZK DMR 5G grid at the GPS *position*
+(`cockpitview/altimeter.py` — assumes the plane sits on the ground when the
+first fix arrives), then shows baro AMSL in the altitude box and
+`R = baro AMSL − terrain(position)` as the radar altitude. The
 remaining gap to the target topology is the ESP-NOW link — today the air
 ESP32 plugs directly into the PC and speaks CSV; the ground bridge and the
 `lib/protocol/` wire format are not in use yet. The GPS course-over-ground

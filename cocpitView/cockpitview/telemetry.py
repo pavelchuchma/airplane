@@ -61,8 +61,11 @@ class TelemetrySnapshot:
     alt_amsl_m: float = 0.0
     alt_amsl_ts: float = field(default=-math.inf)
 
-    # height above terrain, filled in by the main loop from a Terrain grid
+    # filled in by the main loop: height above terrain from a Terrain grid,
+    # and the altitude for the HUD box (calibrated AMSL, or relative when no
+    # terrain grid is loaded and calibration is impossible)
     agl_m: float | None = None
+    display_alt_m: float | None = None
 
     heartbeat_ts: float = field(default=-math.inf)
 
@@ -124,13 +127,11 @@ class TelemetrySnapshot:
 
     @property
     def amsl_m(self):
-        """Altitude above mean sea level in meters (baro preferred), or None."""
+        """Altitude above mean sea level in meters, or None. Comes only from
+        ALTITUDE.altitude_amsl (calibrated baro, see altimeter.py) - GPS
+        altitude is deliberately never used, its noise is tens of meters."""
         if self._fresh(self.alt_amsl_ts):
             return self.alt_amsl_m
-        if self._fresh(self.gpi_ts):
-            return self.gpi_alt_amsl_m
-        if self._fresh(self.vfr_ts):
-            return self.vfr_alt_m
         return None
 
     @property
@@ -206,8 +207,9 @@ def heartbeat(mav):
 class TelemetryHub:
     """Distributes messages from a telemetry source to the HUD snapshot and QGC."""
 
-    def __init__(self, qgc_host="127.0.0.1", qgc_port=14550, system_id=1):
+    def __init__(self, qgc_host="127.0.0.1", qgc_port=14550, system_id=1, calibrator=None):
         self._state = TelemetrySnapshot()
+        self._calibrator = calibrator  # altimeter.BaroCalibrator or None
         self._lock = threading.Lock()
         self._conn = mavutil.mavlink_connection(
             f"udpout:{qgc_host}:{qgc_port}",
@@ -221,6 +223,8 @@ class TelemetryHub:
         return self._conn.mav
 
     def publish(self, msg):
+        if self._calibrator is not None:
+            msg = self._calibrator.process(msg)
         now = time.monotonic()
         with self._lock:
             apply_message(self._state, msg, now)

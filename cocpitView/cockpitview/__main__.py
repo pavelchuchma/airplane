@@ -22,6 +22,7 @@ import time
 
 import pygame
 
+from .altimeter import BaroCalibrator
 from .camera import Camera
 from .emulator_source import EmulatorSource
 from .hud import Hud
@@ -64,17 +65,20 @@ def main():
     screen = pygame.display.set_mode((args.width, args.height), flags, vsync=1)
     pygame.display.set_caption("Cockpit View")
 
-    telemetry = TelemetryHub(qgc_host=args.qgc_host, qgc_port=args.qgc_port, system_id=args.system_id)
+    terrain = Terrain.load(args.terrain)
+    if terrain is None:
+        print(f"No terrain grid at '{args.terrain}' - AMSL/AGL readouts disabled (run python -m cockpitview.terrain_fetch)")
+
+    calibrator = BaroCalibrator(terrain) if terrain is not None else None
+    telemetry = TelemetryHub(
+        qgc_host=args.qgc_host, qgc_port=args.qgc_port, system_id=args.system_id, calibrator=calibrator
+    )
     if args.emulator:
         source = EmulatorSource(telemetry, rate=args.rate)
     else:
         source = SerialSource(telemetry, port=args.serial_port, baud=args.baud)
     source.start()
     print(f"Forwarding MAVLink to udp:{args.qgc_host}:{args.qgc_port}")
-
-    terrain = Terrain.load(args.terrain)
-    if terrain is None:
-        print(f"No terrain grid at '{args.terrain}' - AGL readout disabled (run python -m cockpitview.terrain_fetch)")
 
     camera = None
     if not args.no_camera and not args.dump_frame:
@@ -111,6 +115,10 @@ def main():
 
             dt = clock.tick(60) / 1000.0
             snap = telemetry.snapshot()
+            # with a terrain grid the box shows calibrated AMSL ("---" until
+            # the calibration locks); without one only the relative altitude
+            # is available and AGL stays off
+            snap.display_alt_m = snap.amsl_m if terrain is not None else snap.altitude_m
             if terrain is not None and snap.position is not None and snap.amsl_m is not None:
                 snap.agl_m = terrain.agl_m(*snap.position, snap.amsl_m)
             hud.draw(screen, snap, dt)
