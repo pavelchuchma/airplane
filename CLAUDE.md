@@ -22,10 +22,11 @@ decisions. Keep it updated when the design evolves.
 ## Commands
 
 - Firmware build/upload: `cd esp32 && pio run -e air -t upload` (or `-e ground`)
-- Both devkits have clone CP2102s with the same USB serial number; upload and
-  monitor ports are resolved by physical USB location (`esp32/tools/select_port.py`,
-  `custom_usb_location` in platformio.ini) — each board stays in its assigned
-  USB port.
+- Both devkits have clone CP2102s with the same USB serial number; boards are
+  identified by their factory MAC (`custom_board_mac` in platformio.ini,
+  probed via ROM bootloader — see `esp32/tools/board_id.py`). Boards may be
+  plugged into any USB port; `custom_usb_location` is only a probe-order hint.
+  Note: the probe resets the board it touches.
 - Ground app: `cocpitView/run.sh`
 
 ## Rules

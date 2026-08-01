@@ -6,10 +6,11 @@ forwards them to QGroundControl as MAVLink HEARTBEAT/ATTITUDE over UDP - the
 physical counterpart of mpu6050_emulator.py (no GPS/altitude, since a bare
 MPU-6050 can't measure those).
 
-By default the serial port is resolved by physical USB location (the boards'
-clone CP2102s share one serial number, so port names are ambiguous — see
-../esp32/tools/select_port.py). The location is read from `custom_usb_location`
-of [env:air] in ../esp32/platformio.ini.
+By default the serial port is resolved by the air board's factory MAC
+address (the boards' clone CP2102s share one USB serial number, so port
+names are ambiguous — see ../esp32/tools/board_id.py). The MAC and the
+probe-order hint come from [env:air] in ../esp32/platformio.ini. Note the
+probe resets the board, so the stream starts with a fresh gyro calibration.
 
 Usage:
     ./.venv/bin/python mpu6050_hw_bridge.py
@@ -23,27 +24,27 @@ import sys
 import time
 
 import serial
-from serial.tools import list_ports
 from pymavlink import mavutil
 
+ESP32_DIR = pathlib.Path(__file__).resolve().parent.parent / "esp32"
+sys.path.insert(0, str(ESP32_DIR / "tools"))
+import board_id
+
 HEARTBEAT_PERIOD_S = 1.0
-PLATFORMIO_INI = pathlib.Path(__file__).resolve().parent.parent / "esp32" / "platformio.ini"
 
 
 def find_air_port():
-    """Resolve the air ESP32's serial port by its USB location."""
+    """Resolve the air ESP32's serial port by its factory MAC (resets the board)."""
     config = configparser.ConfigParser(inline_comment_prefixes=(";",))
-    config.read(PLATFORMIO_INI)
-    location = config.get("env:air", "custom_usb_location", fallback="").strip()
-    if not location:
-        sys.exit(f"custom_usb_location not set for [env:air] in {PLATFORMIO_INI}")
-    matches = [p.device for p in list_ports.comports() if p.location and p.location.startswith(location)]
-    if len(matches) != 1:
-        sys.exit(
-            f"expected exactly one serial device at USB location {location}, found: "
-            f"{', '.join(matches) or 'none'} (is the air board plugged into its assigned port?)"
-        )
-    return matches[0]
+    config.read(ESP32_DIR / "platformio.ini")
+    mac = config.get("env:air", "custom_board_mac", fallback="").strip()
+    if not mac:
+        sys.exit(f"custom_board_mac not set for [env:air] in {ESP32_DIR / 'platformio.ini'}")
+    hint = config.get("env:air", "custom_usb_location", fallback="").strip() or None
+    try:
+        return board_id.find_board(mac, hint)
+    except (LookupError, RuntimeError) as err:
+        sys.exit(f"air board not found: {err}")
 
 
 def parse_line(line):
