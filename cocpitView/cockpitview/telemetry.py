@@ -1,6 +1,6 @@
 """MAVLink telemetry hub.
 
-Telemetry sources (serial_source.py, emulator_source.py) encode pymavlink
+Telemetry sources (espnow_source.py, emulator_source.py) encode pymavlink
 messages and publish() them here. The hub applies every message to a
 thread-safe TelemetrySnapshot for the HUD and forwards it unchanged to
 QGroundControl over UDP - both consumers see identical data.
@@ -8,9 +8,13 @@ QGroundControl over UDP - both consumers see identical data.
 Handled message types:
   - emulator_source.py: ATTITUDE + VFR_HUD + GPS_RAW_INT +
     GLOBAL_POSITION_INT + ALTITUDE
-  - serial_source.py: the same set (baro altitude/vario; position/velocity
-    from the GPS - GLOBAL_POSITION_INT only while there is a fix)
-"""
+  - espnow_source.py: the same set (baro altitude/vario; position/velocity
+    from the GPS - GLOBAL_POSITION_INT only while there is a fix), plus
+    RADIO_STATUS/STATUSTEXT which pass through to QGC unapplied
+
+ESP-NOW link stats (RSSI, loss percentages, the air-side failsafe flag)
+have no natural MAVLink carrier for the HUD, so espnow_source.py sets them
+directly on the snapshot via update_link()."""
 
 import math
 import threading
@@ -68,6 +72,13 @@ class TelemetrySnapshot:
     display_alt_m: float | None = None
 
     heartbeat_ts: float = field(default=-math.inf)
+
+    # ESP-NOW link stats, set by espnow_source.py via TelemetryHub.update_link()
+    link_rssi_dbm: int | None = None  # air-side RSSI of command frames
+    link_cmd_loss_pct: int = 0  # uplink loss measured at the air side
+    link_telem_loss_pct: int = 0  # downlink loss measured PC-side
+    failsafe_active: bool = False  # air-side failsafe flag
+    link_ts: float = field(default=-math.inf)
 
     now: float = 0.0
 
@@ -149,6 +160,20 @@ class TelemetrySnapshot:
             return None
         return (self.vn, self.ve, self.vd)
 
+    @property
+    def link_status(self):
+        """(rssi_dbm, cmd_loss_pct, telem_loss_pct) or None when the source
+        never reported link stats / they went stale; rssi_dbm is None until
+        the air side has seen a command frame."""
+        if not self._fresh(self.link_ts):
+            return None
+        return (self.link_rssi_dbm, self.link_cmd_loss_pct, self.link_telem_loss_pct)
+
+    @property
+    def failsafe(self):
+        """True while the air side reports its command-loss failsafe."""
+        return self._fresh(self.link_ts) and self.failsafe_active
+
 
 def apply_message(s, msg, now):
     """Applies a MAVLink message to a TelemetrySnapshot (not thread-safe)."""
@@ -229,6 +254,18 @@ class TelemetryHub:
         with self._lock:
             apply_message(self._state, msg, now)
         self._conn.mav.send(msg)
+
+    def update_link(self, rssi_dbm, cmd_loss_pct, telem_loss_pct, failsafe):
+        """ESP-NOW link stats for the HUD (no MAVLink counterpart - QGC gets
+        RADIO_STATUS/STATUSTEXT separately from the source)."""
+        now = time.monotonic()
+        with self._lock:
+            s = self._state
+            s.link_rssi_dbm = rssi_dbm
+            s.link_cmd_loss_pct = cmd_loss_pct
+            s.link_telem_loss_pct = telem_loss_pct
+            s.failsafe_active = failsafe
+            s.link_ts = now
 
     def snapshot(self):
         with self._lock:

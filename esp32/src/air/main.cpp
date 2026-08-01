@@ -1,9 +1,6 @@
 /*
  * Air side: sensors, servos, autopilot.
  *
- * Current state: a 1:1 port of the arduinoNano MPU-6050 firmware — the ESP32
- * is connected directly to the PC over USB serial, no ESP-NOW link yet.
- *
  * Reads the GY-91 sensor board over I2C (Wire):
  *   - accelerometer/gyroscope (MPU-6500 at 0x68; the board is sold as
  *     MPU-9250 but ours is a 6-axis clone without the AK8963 magnetometer).
@@ -15,21 +12,21 @@
  *
  * Reads the Quescan G10A-F30 GPS (u-blox M10) over UART2 (see gps.h).
  *
- * Prints one CSV line over USB serial (115200 baud, 50 Hz):
+ * Telemetry goes out over ESP-NOW as one TelemetryMessage per sample
+ * (50 Hz, lib/protocol/messages.h) to the ground bridge, which forwards it
+ * framed over USB serial to cocpitView. Commands (CommandMessage, 50 Hz
+ * from cocpitView) arrive the same way in reverse; no command for
+ * kFailsafeTimeoutMs raises the failsafe flag in telemetry — the only
+ * failsafe action for now, there are no servos yet. Telemetry also carries
+ * link stats: RSSI of the peer's frames (via a promiscuous-mode callback —
+ * the IDF 4.4 ESP-NOW rx callback has no RSSI), command-loss and
+ * telemetry-NACK percentages over 1 s windows.
  *
- *   roll,pitch,yaw,rollspeed,pitchspeed,yawspeed,alt,climb,
- *   lat,lon,alt_msl,gs,cog,sats,hdop,hacc,vacc\n
- *     (angles in radians, *speed in radians/s, alt in m above the boot
- *      location, climb in m/s; lat/lon in degrees, alt_msl in m, gs in
- *      m/s, cog in degrees, hacc/vacc are the receiver's 1-sigma
- *      horizontal/vertical error estimates in m. alt/climb are "nan" when
- *      the BMP280 is missing; lat..cog and hacc/vacc are "nan" without a
- *      valid GPS fix - sats/hdop stay live so fix acquisition is visible)
+ * USB serial (115200 baud) carries only '#'-prefixed boot/status
+ * diagnostics — the CSV telemetry output is gone.
  *
- * The lines are read by cocpitView (cockpitview/serial_source.py), which
- * forwards them to QGroundControl as MAVLink ATTITUDE + VFR_HUD + ALTITUDE
- * + GPS_RAW_INT + GLOBAL_POSITION_INT over UDP. Lines starting with '#'
- * are boot diagnostics, ignored by the parser.
+ * The peer (ground board) MAC comes from -DPEER_MAC_STR, injected from
+ * [env:ground] custom_board_mac by tools/peer_mac.py.
  *
  * Wiring GY-91 -> ESP32:
  *   VIN -> 3V3, GND -> GND, SCL -> GPIO22, SDA -> GPIO21,
@@ -44,9 +41,13 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
 
 #include "bmp280.h"
+#include "espnow_link.h"
 #include "gps.h"
+#include "messages.h"
 
 namespace {
 
@@ -73,6 +74,93 @@ float baroReferencePa = 0.0f;
 float altitudeM = NAN;
 float climbRate = 0.0f;
 uint32_t lastBaroUs = 0;
+
+// ------------------------------------------------------------ ESP-NOW link
+
+constexpr uint32_t kFailsafeTimeoutMs = 500;  // 25 consecutive lost command frames
+constexpr uint32_t kStatsWindowMs = 1000;
+constexpr uint32_t kExpectedCmdPerWindow = 50;  // command rate is fixed 50 Hz
+
+uint8_t peerMac[6];
+bool linkOk = false;
+
+// Shared with the ESP-NOW callbacks (WiFi task context).
+portMUX_TYPE linkMux = portMUX_INITIALIZER_UNLOCKED;
+CommandMessage lastCommand = {};  // last valid command (future servo input)
+uint32_t lastCmdMs = 0;           // 0 = no valid command since boot
+uint32_t cmdRxCount = 0;          // valid commands in the current stats window
+uint8_t lastCmdVersion = 0;       // version byte of the last command, 0 = none
+bool cmdVersionMismatch = false;
+uint32_t telemSendOk = 0;  // esp_now_send delivery reports in the window
+uint32_t telemSendFail = 0;
+volatile int8_t peerRssiDbm = 0;  // last frame from the peer, 0 = none yet
+
+// Stats window results, published into every TelemetryMessage.
+uint8_t cmdLossPct = 100;
+uint8_t txFailPct = 0;
+uint32_t statsWindowStartMs = 0;
+
+void onCommandReceived(const uint8_t *mac, const uint8_t *data, int len) {
+  if (len != (int)sizeof(CommandMessage) || data[0] != MSG_COMMAND) {
+    return;
+  }
+  CommandMessage cmd;
+  memcpy(&cmd, data, sizeof(cmd));
+  portENTER_CRITICAL(&linkMux);
+  lastCmdVersion = cmd.version;
+  if (cmd.version == PROTOCOL_VERSION) {
+    lastCommand = cmd;
+    lastCmdMs = millis();
+    cmdRxCount++;
+    cmdVersionMismatch = false;
+  } else {
+    // Unusable command: report the mismatch but let the failsafe trip.
+    cmdVersionMismatch = true;
+  }
+  portEXIT_CRITICAL(&linkMux);
+}
+
+void onTelemetrySent(const uint8_t *mac, esp_now_send_status_t status) {
+  portENTER_CRITICAL(&linkMux);
+  if (status == ESP_NOW_SEND_SUCCESS) {
+    telemSendOk++;
+  } else {
+    telemSendFail++;
+  }
+  portEXIT_CRITICAL(&linkMux);
+}
+
+// The IDF 4.4 ESP-NOW rx callback carries no RSSI, so it is sniffed from a
+// promiscuous-mode callback instead: ESP-NOW frames are 802.11 action
+// frames (management type), the transmitter address sits at payload+10.
+void onPromiscuousRx(void *buf, wifi_promiscuous_pkt_type_t type) {
+  if (type != WIFI_PKT_MGMT) {
+    return;
+  }
+  auto *pkt = (wifi_promiscuous_pkt_t *)buf;
+  if (memcmp(pkt->payload + 10, peerMac, 6) == 0) {
+    peerRssiDbm = (int8_t)pkt->rx_ctrl.rssi;
+  }
+}
+
+// Recomputes the 1 s window stats feeding cmdLossPct/txFailPct.
+void updateLinkStats(uint32_t nowMs) {
+  if (nowMs - statsWindowStartMs < kStatsWindowMs) {
+    return;
+  }
+  statsWindowStartMs = nowMs;
+  portENTER_CRITICAL(&linkMux);
+  uint32_t rx = cmdRxCount;
+  uint32_t ok = telemSendOk;
+  uint32_t fail = telemSendFail;
+  cmdRxCount = 0;
+  telemSendOk = 0;
+  telemSendFail = 0;
+  portEXIT_CRITICAL(&linkMux);
+  uint32_t rxPct = rx * 100 / kExpectedCmdPerWindow;
+  cmdLossPct = (uint8_t)(100 - min(rxPct, (uint32_t)100));
+  txFailPct = (ok + fail) ? (uint8_t)(fail * 100 / (ok + fail)) : 0;
+}
 
 void mpuWriteRegister(uint8_t reg, uint8_t value) {
   Wire.beginTransmission(kMpuAddress);
@@ -161,6 +249,25 @@ void updateBaro(uint32_t now) {
 
 void setup() {
   Serial.begin(115200);
+
+  // Radio first: the command receiver and stats windows start counting
+  // while the blocking sensor calibrations below (~2 s) run.
+  if (!espnowlink::parseMac(PEER_MAC_STR, peerMac)) {
+    Serial.println("# bad PEER_MAC_STR - ESP-NOW disabled");
+  } else if (!espnowlink::begin(peerMac)) {
+    Serial.print("# ESP-NOW init failed: ");
+    Serial.println(espnowlink::lastError());
+  } else {
+    linkOk = true;
+    esp_now_register_recv_cb(onCommandReceived);
+    esp_now_register_send_cb(onTelemetrySent);
+    esp_wifi_set_promiscuous(true);  // RSSI sniffing, see onPromiscuousRx
+    wifi_promiscuous_filter_t filter = {.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT};
+    esp_wifi_set_promiscuous_filter(&filter);
+    esp_wifi_set_promiscuous_rx_cb(onPromiscuousRx);
+  }
+  statsWindowStartMs = millis();
+
   Wire.begin();
   Wire.setClock(400000);
 
@@ -226,39 +333,59 @@ void loop() {
   pitch = kComplementaryAlpha * (pitch + gy * dt) + (1.0f - kComplementaryAlpha) * pitchAccel;
   yaw += gz * dt;  // no magnetometer - gyro integration only, drifts over time
 
-  Serial.print(roll, 5);
-  Serial.print(',');
-  Serial.print(pitch, 5);
-  Serial.print(',');
-  Serial.print(yaw, 5);
-  Serial.print(',');
-  Serial.print(gx, 5);
-  Serial.print(',');
-  Serial.print(gy, 5);
-  Serial.print(',');
-  Serial.print(gz, 5);
-  Serial.print(',');
-  Serial.print(altitudeM, 2);
-  Serial.print(',');
-  Serial.print(climbRate, 2);
+  if (!linkOk) {
+    return;
+  }
+
+  uint32_t nowMs = millis();
+  updateLinkStats(nowMs);
+
+  portENTER_CRITICAL(&linkMux);
+  uint32_t cmdMs = lastCmdMs;
+  bool mismatch = cmdVersionMismatch;
+  uint8_t cmdVersion = lastCmdVersion;
+  portEXIT_CRITICAL(&linkMux);
+
+  bool failsafe = cmdMs == 0 || nowMs - cmdMs > kFailsafeTimeoutMs;
+  static bool wasFailsafe = true;  // failsafe until the first valid command
+  if (failsafe != wasFailsafe) {
+    wasFailsafe = failsafe;
+    // No servos yet - the flag (+ this diagnostic) is the whole action.
+    Serial.println(failsafe ? "# FAILSAFE entered - command link lost"
+                            : "# FAILSAFE cleared");
+  }
 
   gps::Fix f = gps::fix();
-  Serial.print(',');
-  Serial.print(f.latDeg, 7);  // 7 decimals ~ 1 cm; invalid fields print "nan"
-  Serial.print(',');
-  Serial.print(f.lonDeg, 7);
-  Serial.print(',');
-  Serial.print(f.altMslM, 1);
-  Serial.print(',');
-  Serial.print(f.speedMps, 2);
-  Serial.print(',');
-  Serial.print(f.courseDeg, 1);
-  Serial.print(',');
-  Serial.print(f.sats);
-  Serial.print(',');
-  Serial.print(f.hdop, 2);
-  Serial.print(',');
-  Serial.print(f.hAccM, 2);
-  Serial.print(',');
-  Serial.println(f.vAccM, 2);
+
+  TelemetryMessage t = {};
+  t.msgId = MSG_TELEMETRY;
+  t.version = PROTOCOL_VERSION;
+  t.flags = (f.valid ? TELEM_FLAG_GPS_FIX : 0) | (failsafe ? TELEM_FLAG_FAILSAFE : 0) |
+            (mismatch ? TELEM_FLAG_VERSION_MISMATCH : 0) | (baroOk ? TELEM_FLAG_BARO_OK : 0);
+  t.sats = f.sats;
+  t.timeBootMs = nowMs;
+  t.rollRad = roll;
+  t.pitchRad = pitch;
+  t.yawRad = yaw;
+  t.rollRate = gx;
+  t.pitchRate = gy;
+  t.yawRate = gz;
+  t.baroAltM = altitudeM;
+  t.climbMps = climbRate;
+  if (f.valid) {
+    t.lat1e7 = (int32_t)llround(f.latDeg * 1e7);
+    t.lon1e7 = (int32_t)llround(f.lonDeg * 1e7);
+  }
+  t.altMslM = f.altMslM;
+  t.speedMps = f.speedMps;
+  t.courseDeg = f.courseDeg;
+  t.hdop = f.hdop;
+  t.hAccM = f.hAccM;
+  t.vAccM = f.vAccM;
+  t.rssiDbm = peerRssiDbm;
+  t.cmdLossPct = cmdLossPct;
+  t.txFailPct = txFailPct;
+  t.lastCmdVersion = cmdVersion;
+
+  esp_now_send(peerMac, (const uint8_t *)&t, sizeof(t));
 }

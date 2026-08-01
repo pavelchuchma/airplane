@@ -66,11 +66,18 @@ cocpitView calibrates the baro once on the ground against the local terrain
 elevation from a pre-fetched CUZK DMR 5G grid at the GPS *position*
 (`cockpitview/altimeter.py` — assumes the plane sits on the ground when the
 first fix arrives), then shows baro AMSL in the altitude box and
-`R = baro AMSL − terrain(position)` as the radar altitude. The
-remaining gap to the target topology is the ESP-NOW link — today the air
-ESP32 plugs directly into the PC and speaks CSV; the ground bridge and the
-`lib/protocol/` wire format are not in use yet. The GPS course-over-ground
-yaw correction (above a groundspeed threshold) is the other open follow-up.
+`R = baro AMSL − terrain(position)` as the radar altitude.
+
+The ESP-NOW link is implemented: the air firmware sends one `TelemetryMessage`
+per sample (50 Hz) and receives `CommandMessage`s (lib/protocol/messages.h),
+the ground bridge forwards opaque payloads between ESP-NOW and framed USB
+serial, and cocpitView (`cockpitview/espnow_source.py` + `protocol.py`) reads
+the bridge, sends 50 Hz commands — neutral channels until the joystick
+exists — and shows link quality (`LNK -72 U2% D0%`) and the air-side
+`FAILSAFE` flag on the HUD, plus RADIO_STATUS/STATUSTEXT for QGC. Remaining
+follow-ups: joystick input, servos + a real failsafe action (today the flag
+and a `#` diagnostic are the whole action), and the GPS course-over-ground
+yaw correction (above a groundspeed threshold).
 
 ## Design decisions
 
@@ -90,11 +97,32 @@ yaw correction (above a groundspeed threshold) is the other open follow-up.
   side reports a version mismatch via telemetry so drift is caught
   immediately.
 - **The link is safety-critical** (it replaces the RC transmitter):
-  - control commands are sent at a fixed rate (~50 Hz) regardless of change,
+  - control commands are sent at a fixed rate (50 Hz) regardless of change,
     so silence reliably means link loss;
-  - the air firmware has a failsafe from day one: no command for X ms →
-    defined action (level + hold, later RTH via autopilot);
+  - the air firmware has a failsafe from day one: no valid command for
+    500 ms (25 consecutive lost frames) → defined action (today just the
+    telemetry flag + a `#` diagnostic — no servos yet; later level + hold,
+    then RTH via autopilot);
   - telemetry includes RSSI / packet-loss stats so link quality is visible in
     cocpitView before the airplane is lost;
   - ESP32 long-range mode (`WIFI_PROTOCOL_LR`) is enabled — the default
     ESP-NOW range is marginal for flying.
+- **Chosen link parameters** (see `lib/protocol/`):
+  - one combined 76 B `TelemetryMessage` at 50 Hz (GPS fields simply repeat
+    between the 5 Hz GPS updates) — ~3.8 kB/s, comfortable even at the LR
+    mode's reduced bitrate, and one parse path instead of two;
+  - serial framing `COBS(payload‖CRC-16/CCITT-FALSE) + 0x00` — fixed +1 B
+    COBS overhead and trivial resync on the delimiter; the ground UART runs
+    at 460800 baud (the clone CP2102s are not reliable at 921600) and
+    carries framed binary only, no text;
+  - WiFi channel 1, both radios in STA mode with power save off (the default
+    modem sleep drops ESP-NOW frames); peers are the factory MACs from
+    `platformio.ini`, compiled in as `-DPEER_MAC_STR` by `tools/peer_mac.py`;
+  - the radio hop is encrypted with ESP-NOW's built-in PMK/LMK (CCMP in
+    hardware, `lib/protocol/link_keys.h`, air + ground only — the USB side
+    is trusted). A key/channel mismatch fails silently: a dead link right
+    after touching either means suspect the keys first;
+  - RSSI of the peer's frames is sniffed via a promiscuous-mode callback —
+    the Arduino core 2.x / IDF 4.4 ESP-NOW receive callback carries no RSSI
+    (that arrived with `esp_now_recv_info_t` in core 3.x; the callback
+    signatures change too if the platform is ever bumped).

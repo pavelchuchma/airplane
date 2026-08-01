@@ -39,10 +39,19 @@ decisions. Keep it updated when the design evolves.
 
 ## Current state (update as work progresses)
 
-- `esp32/src/air` connects directly to the PC over USB serial (CSV lines,
-  115200 baud, 17 fields: attitude + rates + baro altitude/climb + GPS
-  lat/lon/alt_msl/gs/cog/sats/hdop/hacc/vacc), no ESP-NOW yet. `esp32/src/ground` is
-  still an empty skeleton. The sensor board is a GY-91, but its IMU is an
+- The ESP-NOW link is live: `esp32/src/air` sends a 76 B `TelemetryMessage`
+  at 50 Hz and receives 50 Hz `CommandMessage`s (structs + COBS/CRC-16
+  framing + shared radio bring-up in `esp32/lib/protocol/`; channel 1, LR
+  mode, PMK/LMK encryption, peer MACs injected as `-DPEER_MAC_STR` by
+  `tools/peer_mac.py`). No valid command for 500 ms → failsafe flag in
+  telemetry + `# FAILSAFE` diagnostic (no servos yet, the flag is the whole
+  action). Air USB serial (115200) carries only `#` diagnostics now — the
+  CSV output is gone. `esp32/src/ground` is the protocol-agnostic bridge:
+  ESP-NOW payloads ↔ COBS+CRC frames on USB serial at 460800 baud, binary
+  only, never prints. Air-side RSSI comes from a promiscuous-mode callback
+  (IDF 4.4 has no per-packet RSSI in the ESP-NOW rx callback; core 3.x
+  would change the callback signatures).
+- The sensor board is a GY-91, but its IMU is an
   MPU-6500 (verified via WHO_AM_I = 0x70 and no AK8963 at 0x0C) — a fake
   "MPU-9250", so there is **no magnetometer**. Yaw drifts; the plan is GPS
   course-over-ground correction, not a compass. The BMP280 barometer is read
@@ -52,15 +61,21 @@ decisions. Keep it updated when the design evolves.
   read via TinyGPSPlus (`src/air/gps.cpp`). The chip is flash-less, so the
   firmware re-applies config at every boot via raw UBX-CFG-VALSET frames:
   5 Hz nav rate, airborne ≤4g dynamic model, RMC+GGA+GST sentences only (GST
-  carries the receiver's 1-sigma error estimates → hacc/vacc). GPS CSV
-  fields are `nan` without a fix (sats/hdop stay live).
-- cocpitView is the telemetry hub: it reads the air ESP32's serial CSV
-  directly (or a built-in emulator via `--emulator`) and forwards MAVLink to
-  QGC (UDP 14550): ATTITUDE + VFR_HUD + ALTITUDE + GPS_RAW_INT (always) +
-  GLOBAL_POSITION_INT (only with a fix). The HUD shows a `GPS 3D 12` status
-  line; position enables its flight-path marker and AGL. The old standalone
-  `emulator/mpu6050_*.py` scripts are gone; the flight-profile emulator lives
-  in the `cockpitview` package.
+  carries the receiver's 1-sigma error estimates → hacc/vacc). GPS telemetry
+  floats are NAN without a fix (sats/hdop stay live); lat/lon travel as
+  int32 deg·1e7 guarded by the `TELEM_FLAG_GPS_FIX` flag.
+- cocpitView is the telemetry hub: `cockpitview/espnow_source.py` reads the
+  ground bridge's framed serial stream (port resolved by `[env:ground]` MAC;
+  `cockpitview/protocol.py` is the Python mirror of `messages.h` + framing),
+  sends 50 Hz neutral commands back, and forwards MAVLink to QGC (UDP
+  14550): ATTITUDE + VFR_HUD + ALTITUDE + GPS_RAW_INT (always) +
+  GLOBAL_POSITION_INT (only with a fix) + RADIO_STATUS + STATUSTEXT on
+  failsafe transitions. A built-in emulator remains via `--emulator`. The
+  HUD shows `GPS 3D 12` and `LNK -72 U2% D0%` status lines (air-side RSSI,
+  uplink/downlink loss) and blinks `FAILSAFE` while the air side reports it.
+  Protocol version mismatches are surfaced as one-shot console warnings
+  (air → PC checked on every telemetry frame, PC → air reported back via
+  `TELEM_FLAG_VERSION_MISMATCH`).
 - Altitude display ignores GPS altitude entirely (its vertical noise is tens
   of meters). `cockpitview/altimeter.py` calibrates the baro once on the
   ground: after the first good 3D fix while stationary it locks
@@ -71,6 +86,6 @@ decisions. Keep it updated when the design evolves.
   `baro AMSL − terrain(GPS position)`. QGC gets the calibrated altitude too
   (ALTITUDE.altitude_amsl + GLOBAL_POSITION_INT.alt); raw GPS altitude stays
   in GPS_RAW_INT.
-- Next steps: move telemetry onto the ESP-NOW link (air → ground bridge →
-  cocpitView) using the protocol structs in `esp32/lib/protocol/`;
-  course-over-ground yaw correction above a groundspeed threshold.
+- Next steps: joystick input in cocpitView (the command channels are already
+  on the wire, neutral for now); servos + a real failsafe action on the air
+  side; course-over-ground yaw correction above a groundspeed threshold.

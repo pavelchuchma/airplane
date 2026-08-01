@@ -289,6 +289,20 @@ class Hud:
             text += f" ±{max(1, math.ceil(hacc_m)):d}M"
         self._text(surface, text, (8, self.h - 6), anchor="bottomleft")
 
+    # -------------------------------------------------------- link status
+
+    def draw_link_status(self, surface, link):
+        """ESP-NOW link quality, e.g. "LNK -72 U2% D0%" (air-side RSSI in
+        dBm, Uplink command loss measured at the air side, Downlink
+        telemetry loss measured PC-side), in the very bottom-right screen
+        corner; hidden when the source reports no link stats at all."""
+        if link is None:
+            return
+        rssi_dbm, cmd_loss_pct, telem_loss_pct = link
+        rssi = "---" if rssi_dbm is None else f"{rssi_dbm:d}"
+        text = f"LNK {rssi} U{cmd_loss_pct:d}% D{telem_loss_pct:d}%"
+        self._text(surface, text, (self.w - 8, self.h - 6), anchor="bottomright")
+
     # ------------------------------------------------------ roll indicator
 
     def draw_roll_indicator(self, surface, roll):
@@ -335,6 +349,16 @@ class Hud:
                     (self.cx, self.cy - self.h * 0.10),
                     font=self.font_big,
                 )
+        elif snap.failsafe:
+            # air-side command-loss failsafe; NO TELEMETRY covers the
+            # disconnected case, so only one of the two ever blinks
+            if int(self.blink * 2) % 2 == 0:
+                self._text(
+                    surface,
+                    "FAILSAFE",
+                    (self.cx, self.cy + self.h * 0.10),
+                    font=self.font_big,
+                )
 
         if snap.has_attitude:
             self.draw_pitch_ladder(surface, snap.roll, snap.pitch)
@@ -345,3 +369,4 @@ class Hud:
         self.draw_altitude(surface, snap.display_alt_m, snap.agl_m, snap.vario_mps)
         self._text(surface, "NAV", (self.w * 0.11, self.h * 0.88), anchor="midleft")
         self.draw_gps_status(surface, snap.gps_status)
+        self.draw_link_status(surface, snap.link_status)
