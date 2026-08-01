@@ -39,16 +39,19 @@ decisions. Keep it updated when the design evolves.
 
 ## Current state (update as work progresses)
 
-- `esp32/src/air` is a 1:1 port of the arduinoNano MPU-6050 firmware: the air
-  ESP32 connects directly to the PC over USB serial (CSV lines, 115200 baud),
-  no ESP-NOW yet. `esp32/src/ground` is still an empty skeleton. The IMU on
-  the airframe is now a GY-91 (MPU-9250 + BMP280) — drop-in compatible with
-  the MPU-6050 code; magnetometer and barometer are not read yet.
+- `esp32/src/air` connects directly to the PC over USB serial (CSV lines,
+  115200 baud, 8 fields: attitude + rates + baro altitude/climb), no ESP-NOW
+  yet. `esp32/src/ground` is still an empty skeleton. The sensor board is a
+  GY-91, but its IMU is an MPU-6500 (verified via WHO_AM_I = 0x70 and no
+  AK8963 at 0x0C) — a fake "MPU-9250", so there is **no magnetometer**. Yaw
+  drifts; the plan is GPS course-over-ground correction, not a compass. The
+  BMP280 barometer is read (`src/air/bmp280.cpp`): altitude relative to boot
+  location + low-pass-filtered vario, appended to the CSV.
 - cocpitView is the telemetry hub: it reads the air ESP32's serial CSV
   directly (or a built-in emulator via `--emulator`) and forwards MAVLink to
   QGC (UDP 14550). The old standalone `emulator/mpu6050_*.py` scripts are
   gone; the flight-profile emulator lives in the `cockpitview` package.
 - Next steps: move telemetry onto the ESP-NOW link (air → ground bridge →
-  cocpitView) using the protocol structs in `esp32/lib/protocol/`; read the
-  GY-91 extras (magnetometer → drift-free yaw, BMP280 → altitude/vario) in
-  the air firmware.
+  cocpitView) using the protocol structs in `esp32/lib/protocol/`; add GPS
+  (UART) on the air side — position/speed telemetry and course-over-ground
+  yaw correction above a groundspeed threshold.

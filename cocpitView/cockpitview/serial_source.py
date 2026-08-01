@@ -1,8 +1,11 @@
 """Serial telemetry source - the air ESP32 over USB serial (default mode).
 
-Reads CSV lines (roll,pitch,yaw,rollspeed,pitchspeed,yawspeed [rad, rad/s],
-50 Hz, see ../esp32/src/air/) and publishes them to the TelemetryHub as
-MAVLink ATTITUDE plus a 1 Hz HEARTBEAT.
+Reads CSV lines (roll,pitch,yaw,rollspeed,pitchspeed,yawspeed,alt,climb -
+rad, rad/s, m relative to boot location, m/s; 50 Hz, see ../esp32/src/air/)
+and publishes them to the TelemetryHub as MAVLink ATTITUDE + VFR_HUD +
+ALTITUDE plus a 1 Hz HEARTBEAT. alt/climb come from the BMP280 barometer
+and are "nan" when it is missing - VFR_HUD/ALTITUDE are then skipped.
+Lines starting with '#' are firmware boot diagnostics.
 
 By default the serial port is resolved by the air board's factory MAC
 address (the boards' clone CP2102s share one USB serial number, so port
@@ -16,6 +19,7 @@ NO TELEMETRY.
 """
 
 import configparser
+import math
 import pathlib
 import sys
 import threading
@@ -46,7 +50,7 @@ def find_air_port():
 
 def parse_line(line):
     parts = line.strip().split(",")
-    if len(parts) != 6:
+    if len(parts) != 8:
         return None
     try:
         return tuple(float(p) for p in parts)
@@ -94,7 +98,7 @@ class SerialSource:
                 if values is None:
                     continue  # e.g. startup/calibration output or a truncated line
 
-                roll, pitch, yaw, rollspeed, pitchspeed, yawspeed = values
+                roll, pitch, yaw, rollspeed, pitchspeed, yawspeed, alt_m, climb_mps = values
                 now = time.monotonic()
                 time_boot_ms = int((now - start) * 1000) & 0xFFFFFFFF
 
@@ -107,3 +111,30 @@ class SerialSource:
                         time_boot_ms, roll, pitch, yaw, rollspeed, pitchspeed, yawspeed
                     )
                 )
+
+                if not math.isnan(alt_m):
+                    # No airspeed/groundspeed/throttle sensors yet; heading is
+                    # the (drifting) integrated yaw. VFR_HUD.alt nominally is
+                    # AMSL but we only have the baro-relative altitude - the
+                    # HUD prefers ALTITUDE.altitude_relative anyway.
+                    self._hub.publish(
+                        self._hub.mav.vfr_hud_encode(
+                            0.0,
+                            0.0,
+                            int(math.degrees(yaw)) % 360,
+                            0,
+                            alt_m,
+                            climb_mps,
+                        )
+                    )
+                    self._hub.publish(
+                        self._hub.mav.altitude_encode(
+                            int((now - start) * 1e6) & 0xFFFFFFFFFFFFFFFF,
+                            float("nan"),  # altitude_monotonic
+                            float("nan"),  # altitude_amsl - unknown (no QNH)
+                            alt_m,  # altitude_local (relative to boot location)
+                            alt_m,  # altitude_relative
+                            float("nan"),  # altitude_terrain
+                            float("nan"),  # bottom_clearance
+                        )
+                    )

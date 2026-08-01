@@ -4,19 +4,30 @@
  * Current state: a 1:1 port of the arduinoNano MPU-6050 firmware — the ESP32
  * is connected directly to the PC over USB serial, no ESP-NOW link yet.
  *
- * Reads the accelerometer/gyroscope from an MPU-6050 over I2C (Wire), computes
- * roll/pitch with a complementary filter (yaw is gyro-integration only - no
- * magnetometer, so it drifts) and prints one CSV line over USB serial
- * (115200 baud, 50 Hz):
+ * Reads the GY-91 sensor board over I2C (Wire):
+ *   - accelerometer/gyroscope (MPU-6500 at 0x68; the board is sold as
+ *     MPU-9250 but ours is a 6-axis clone without the AK8963 magnetometer).
+ *     Roll/pitch come from a complementary filter; yaw is gyro-integration
+ *     only, so it drifts (planned fix: GPS course-over-ground correction,
+ *     not a magnetometer).
+ *   - BMP280 barometer (0x76): altitude relative to the boot reference
+ *     pressure plus a low-pass-filtered climb rate (vario).
  *
- *   roll,pitch,yaw,rollspeed,pitchspeed,yawspeed\n   (roll/pitch/yaw in radians,
- *                                                       *speed in radians/s)
+ * Prints one CSV line over USB serial (115200 baud, 50 Hz):
+ *
+ *   roll,pitch,yaw,rollspeed,pitchspeed,yawspeed,alt,climb\n
+ *     (angles in radians, *speed in radians/s, alt in m above the boot
+ *      location, climb in m/s; alt/climb are "nan" when the BMP280 is
+ *      missing)
  *
  * The lines are read by cocpitView (cockpitview/serial_source.py), which
- * forwards them to QGroundControl as MAVLink ATTITUDE over UDP.
+ * forwards them to QGroundControl as MAVLink ATTITUDE + VFR_HUD + ALTITUDE
+ * over UDP. Lines starting with '#' are boot diagnostics, ignored by the
+ * parser.
  *
- * Wiring MPU-6050 -> ESP32:
- *   VCC -> 3V3, GND -> GND, SCL -> GPIO22, SDA -> GPIO21, AD0 -> GND (I2C address 0x68)
+ * Wiring GY-91 -> ESP32:
+ *   VIN -> 3V3, GND -> GND, SCL -> GPIO22, SDA -> GPIO21,
+ *   SAO/SDO -> GND (MPU at 0x68), NCS + CSB unconnected (I2C mode)
  *
  * Assumes the module lies flat with its X axis pointing forward and Z axis
  * pointing up - depending on how it's actually mounted on the airframe you
@@ -25,6 +36,8 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+
+#include "bmp280.h"
 
 namespace {
 
@@ -38,9 +51,19 @@ constexpr float kComplementaryAlpha = 0.98f;          // gyro vs. accelerometer 
 constexpr uint32_t kSampleIntervalUs = 20000;         // 50 Hz
 constexpr int kGyroCalibrationSamples = 200;
 
+constexpr uint32_t kBaroIntervalUs = 40000;   // 25 Hz, just under the BMP280's ~26 Hz output
+constexpr int kBaroReferenceSamples = 25;     // 1 s average defining altitude zero
+constexpr float kVarioTimeConstant = 0.5f;    // [s] climb-rate low-pass
+
 float gyroBiasX = 0.0f, gyroBiasY = 0.0f, gyroBiasZ = 0.0f;
 float roll = 0.0f, pitch = 0.0f, yaw = 0.0f;
 uint32_t lastSampleUs = 0;
+
+bool baroOk = false;
+float baroReferencePa = 0.0f;
+float altitudeM = NAN;
+float climbRate = 0.0f;
+uint32_t lastBaroUs = 0;
 
 void mpuWriteRegister(uint8_t reg, uint8_t value) {
   Wire.beginTransmission(kMpuAddress);
@@ -82,6 +105,49 @@ void calibrateGyro() {
   gyroBiasZ = (sumZ / (float)kGyroCalibrationSamples) * kGyroScale;
 }
 
+// Averages 1 s of pressure to define altitude zero at the boot location.
+// The first few samples are discarded while the IIR filter settles.
+void calibrateBaroReference() {
+  constexpr int kDiscard = 5;
+  float sum = 0.0f;
+  int count = 0;
+  for (int i = 0; i < kBaroReferenceSamples + kDiscard; i++) {
+    float pressure, temperature;
+    if (bmp280::read(pressure, temperature) && i >= kDiscard) {
+      sum += pressure;
+      count++;
+    }
+    delay(40);
+  }
+  if (count > 0) {
+    baroReferencePa = sum / count;
+  } else {
+    baroOk = false;
+  }
+}
+
+// Reads the barometer at 25 Hz; altitude is relative to the boot reference,
+// climb rate is a low-pass-filtered derivative (raw would be +-1 m/s noise).
+void updateBaro(uint32_t now) {
+  if (!baroOk || now - lastBaroUs < kBaroIntervalUs) {
+    return;
+  }
+  float dt = (now - lastBaroUs) / 1000000.0f;
+  lastBaroUs = now;
+
+  float pressure, temperature;
+  if (!bmp280::read(pressure, temperature)) {
+    return;
+  }
+  float alt = bmp280::altitudeFromPressure(pressure, baroReferencePa);
+  if (!isnan(altitudeM)) {
+    float rate = (alt - altitudeM) / dt;
+    float alpha = dt / (kVarioTimeConstant + dt);
+    climbRate += alpha * (rate - climbRate);
+  }
+  altitudeM = alt;
+}
+
 }  // namespace
 
 void setup() {
@@ -92,9 +158,19 @@ void setup() {
   mpuWriteRegister(kRegPowerManagement1, 0x00);  // wake up from sleep mode
   delay(50);
 
+  baroOk = bmp280::begin();
+  if (!baroOk) {
+    // '#' lines are ignored by the cocpitView parser
+    Serial.println("# BMP280 not found - alt/climb will be nan");
+  }
+
   calibrateGyro();
+  if (baroOk) {
+    calibrateBaroReference();
+  }
 
   lastSampleUs = micros();
+  lastBaroUs = lastSampleUs;
 }
 
 void loop() {
@@ -104,6 +180,8 @@ void loop() {
   }
   float dt = (now - lastSampleUs) / 1000000.0f;
   lastSampleUs = now;
+
+  updateBaro(now);
 
   int16_t accelRaw[3];
   int16_t gyroRaw[3];
@@ -133,5 +211,9 @@ void loop() {
   Serial.print(',');
   Serial.print(gy, 5);
   Serial.print(',');
-  Serial.println(gz, 5);
+  Serial.print(gz, 5);
+  Serial.print(',');
+  Serial.print(altitudeM, 2);
+  Serial.print(',');
+  Serial.println(climbRate, 2);
 }

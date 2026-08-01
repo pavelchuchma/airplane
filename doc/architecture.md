@@ -49,9 +49,16 @@ Data flows:
 cocpitView is already the hub: it reads telemetry itself (USB serial from the
 air ESP32 by default, or a built-in flight-profile emulator via `--emulator`)
 and feeds QGC over MAVLink/UDP. The standalone `mpu6050_*.py` scripts are
-retired. The remaining gap to the target topology is the ESP-NOW link — today
-the air ESP32 plugs directly into the PC and speaks CSV; the ground bridge and
-the `lib/protocol/` wire format are not in use yet.
+retired. The air firmware reads the GY-91 board: attitude from the IMU and
+altitude/vario from the BMP280 barometer (relative to the boot location,
+translated to MAVLink VFR_HUD + ALTITUDE by cocpitView). Note the GY-91 turned
+out to carry an MPU-6500, not the advertised MPU-9250 — there is no
+magnetometer, so yaw is gyro-integration only and drifts; the plan is to
+correct it from GPS course-over-ground once GPS is on board (fine for a
+fixed-wing, and it avoids compass calibration entirely). The remaining gap to
+the target topology is the ESP-NOW link — today the air ESP32 plugs directly
+into the PC and speaks CSV; the ground bridge and the `lib/protocol/` wire
+format are not in use yet.
 
 ## Design decisions
 

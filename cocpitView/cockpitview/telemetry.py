@@ -8,7 +8,8 @@ QGroundControl over UDP - both consumers see identical data.
 Handled message types:
   - emulator_source.py: ATTITUDE + VFR_HUD + GPS_RAW_INT +
     GLOBAL_POSITION_INT + ALTITUDE
-  - serial_source.py: ATTITUDE only (speed/altitude/velocity stay invalid)
+  - serial_source.py: ATTITUDE + VFR_HUD + ALTITUDE (baro altitude/vario;
+    speed/position/velocity stay invalid)
 """
 
 import math
@@ -78,6 +79,13 @@ class TelemetrySnapshot:
         if not self._fresh(self.vfr_ts):
             return None
         return self.airspeed_mps * 3.6
+
+    @property
+    def vario_mps(self):
+        """Climb rate in m/s from VFR_HUD (positive = climbing), or None."""
+        if not self._fresh(self.vfr_ts):
+            return None
+        return self.climb_mps
 
     @property
     def altitude_m(self):
