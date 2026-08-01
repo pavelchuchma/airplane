@@ -13,21 +13,29 @@
  *   - BMP280 barometer (0x76): altitude relative to the boot reference
  *     pressure plus a low-pass-filtered climb rate (vario).
  *
+ * Reads the Quescan G10A-F30 GPS (u-blox M10) over UART2 (see gps.h).
+ *
  * Prints one CSV line over USB serial (115200 baud, 50 Hz):
  *
- *   roll,pitch,yaw,rollspeed,pitchspeed,yawspeed,alt,climb\n
+ *   roll,pitch,yaw,rollspeed,pitchspeed,yawspeed,alt,climb,
+ *   lat,lon,alt_msl,gs,cog,sats,hdop,hacc,vacc\n
  *     (angles in radians, *speed in radians/s, alt in m above the boot
- *      location, climb in m/s; alt/climb are "nan" when the BMP280 is
- *      missing)
+ *      location, climb in m/s; lat/lon in degrees, alt_msl in m, gs in
+ *      m/s, cog in degrees, hacc/vacc are the receiver's 1-sigma
+ *      horizontal/vertical error estimates in m. alt/climb are "nan" when
+ *      the BMP280 is missing; lat..cog and hacc/vacc are "nan" without a
+ *      valid GPS fix - sats/hdop stay live so fix acquisition is visible)
  *
  * The lines are read by cocpitView (cockpitview/serial_source.py), which
  * forwards them to QGroundControl as MAVLink ATTITUDE + VFR_HUD + ALTITUDE
- * over UDP. Lines starting with '#' are boot diagnostics, ignored by the
- * parser.
+ * + GPS_RAW_INT + GLOBAL_POSITION_INT over UDP. Lines starting with '#'
+ * are boot diagnostics, ignored by the parser.
  *
  * Wiring GY-91 -> ESP32:
  *   VIN -> 3V3, GND -> GND, SCL -> GPIO22, SDA -> GPIO21,
  *   SAO/SDO -> GND (MPU at 0x68), NCS + CSB unconnected (I2C mode)
+ * Wiring GPS -> ESP32:
+ *   VCC -> 5V, GND -> GND, TX -> GPIO16, RX -> GPIO17, PPS + EN unconnected
  *
  * Assumes the module lies flat with its X axis pointing forward and Z axis
  * pointing up - depending on how it's actually mounted on the airframe you
@@ -38,6 +46,7 @@
 #include <Wire.h>
 
 #include "bmp280.h"
+#include "gps.h"
 
 namespace {
 
@@ -169,14 +178,30 @@ void setup() {
     calibrateBaroReference();
   }
 
+  // After the blocking calibrations (~2 s) the GPS module is certainly out
+  // of reset, so the fire-and-forget config frames in begin() are not lost.
+  gps::begin();
+
   lastSampleUs = micros();
   lastBaroUs = lastSampleUs;
 }
 
 void loop() {
+  // Drained every pass (the rate gate below early-returns, so this runs far
+  // above the 38400 baud byte rate - no UART overflow between samples).
+  gps::poll();
+
   uint32_t now = micros();
   if (now - lastSampleUs < kSampleIntervalUs) {
     return;
+  }
+
+  static bool gpsChecked = false;
+  if (!gpsChecked && now > 5000000) {
+    gpsChecked = true;
+    if (!gps::alive()) {
+      Serial.println("# GPS not responding on UART2 - GPS fields will be nan");
+    }
   }
   float dt = (now - lastSampleUs) / 1000000.0f;
   lastSampleUs = now;
@@ -215,5 +240,25 @@ void loop() {
   Serial.print(',');
   Serial.print(altitudeM, 2);
   Serial.print(',');
-  Serial.println(climbRate, 2);
+  Serial.print(climbRate, 2);
+
+  gps::Fix f = gps::fix();
+  Serial.print(',');
+  Serial.print(f.latDeg, 7);  // 7 decimals ~ 1 cm; invalid fields print "nan"
+  Serial.print(',');
+  Serial.print(f.lonDeg, 7);
+  Serial.print(',');
+  Serial.print(f.altMslM, 1);
+  Serial.print(',');
+  Serial.print(f.speedMps, 2);
+  Serial.print(',');
+  Serial.print(f.courseDeg, 1);
+  Serial.print(',');
+  Serial.print(f.sats);
+  Serial.print(',');
+  Serial.print(f.hdop, 2);
+  Serial.print(',');
+  Serial.print(f.hAccM, 2);
+  Serial.print(',');
+  Serial.println(f.vAccM, 2);
 }

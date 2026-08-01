@@ -274,6 +274,22 @@ class Hud:
                 anchor="center",
             )
 
+    # --------------------------------------------------------- GPS status
+
+    def draw_gps_status(self, surface, gps):
+        """Fix quality + satellite count + 1-sigma horizontal error, e.g.
+        "GPS 3D 12 ±4M", in the very bottom-left screen corner (outside the
+        HUD symbology); hidden when the source sends no GPS_RAW_INT at all."""
+        if gps is None:
+            return
+        fix_type, sats, hacc_m = gps
+        # MAVLink GPS_FIX_TYPE: 2 = 2D, 3 = 3D, 4+ = differential/RTK
+        label = {2: "2D", 3: "3D"}.get(fix_type, "DGPS" if fix_type > 3 else "--")
+        text = f"GPS {label} {sats:d}"
+        if hacc_m is not None:
+            text += f" ±{max(1, math.ceil(hacc_m)):d}M"
+        self._text(surface, text, (8, self.h - 6), anchor="bottomleft")
+
     # ------------------------------------------------------ roll indicator
 
     def draw_roll_indicator(self, surface, roll):
@@ -329,3 +345,4 @@ class Hud:
         self.draw_airspeed(surface, snap.airspeed_kmh)
         self.draw_altitude(surface, snap.altitude_m, snap.agl_m, snap.vario_mps)
         self._text(surface, "NAV", (self.w * 0.11, self.h * 0.88), anchor="midleft")
+        self.draw_gps_status(surface, snap.gps_status)

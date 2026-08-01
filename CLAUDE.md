@@ -40,18 +40,27 @@ decisions. Keep it updated when the design evolves.
 ## Current state (update as work progresses)
 
 - `esp32/src/air` connects directly to the PC over USB serial (CSV lines,
-  115200 baud, 8 fields: attitude + rates + baro altitude/climb), no ESP-NOW
-  yet. `esp32/src/ground` is still an empty skeleton. The sensor board is a
-  GY-91, but its IMU is an MPU-6500 (verified via WHO_AM_I = 0x70 and no
-  AK8963 at 0x0C) — a fake "MPU-9250", so there is **no magnetometer**. Yaw
-  drifts; the plan is GPS course-over-ground correction, not a compass. The
-  BMP280 barometer is read (`src/air/bmp280.cpp`): altitude relative to boot
-  location + low-pass-filtered vario, appended to the CSV.
+  115200 baud, 17 fields: attitude + rates + baro altitude/climb + GPS
+  lat/lon/alt_msl/gs/cog/sats/hdop/hacc/vacc), no ESP-NOW yet. `esp32/src/ground` is
+  still an empty skeleton. The sensor board is a GY-91, but its IMU is an
+  MPU-6500 (verified via WHO_AM_I = 0x70 and no AK8963 at 0x0C) — a fake
+  "MPU-9250", so there is **no magnetometer**. Yaw drifts; the plan is GPS
+  course-over-ground correction, not a compass. The BMP280 barometer is read
+  (`src/air/bmp280.cpp`): altitude relative to boot location +
+  low-pass-filtered vario.
+- GPS (Quescan G10A-F30, u-blox M10) is on UART2 (GPIO16/17, 38400 baud),
+  read via TinyGPSPlus (`src/air/gps.cpp`). The chip is flash-less, so the
+  firmware re-applies config at every boot via raw UBX-CFG-VALSET frames:
+  5 Hz nav rate, airborne ≤4g dynamic model, RMC+GGA+GST sentences only (GST
+  carries the receiver's 1-sigma error estimates → hacc/vacc). GPS CSV
+  fields are `nan` without a fix (sats/hdop stay live).
 - cocpitView is the telemetry hub: it reads the air ESP32's serial CSV
   directly (or a built-in emulator via `--emulator`) and forwards MAVLink to
-  QGC (UDP 14550). The old standalone `emulator/mpu6050_*.py` scripts are
-  gone; the flight-profile emulator lives in the `cockpitview` package.
+  QGC (UDP 14550): ATTITUDE + VFR_HUD + ALTITUDE + GPS_RAW_INT (always) +
+  GLOBAL_POSITION_INT (only with a fix). The HUD shows a `GPS 3D 12` status
+  line; position enables its flight-path marker and AGL. The old standalone
+  `emulator/mpu6050_*.py` scripts are gone; the flight-profile emulator lives
+  in the `cockpitview` package.
 - Next steps: move telemetry onto the ESP-NOW link (air → ground bridge →
-  cocpitView) using the protocol structs in `esp32/lib/protocol/`; add GPS
-  (UART) on the air side — position/speed telemetry and course-over-ground
-  yaw correction above a groundspeed threshold.
+  cocpitView) using the protocol structs in `esp32/lib/protocol/`;
+  course-over-ground yaw correction above a groundspeed threshold.

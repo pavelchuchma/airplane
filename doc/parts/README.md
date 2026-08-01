@@ -35,7 +35,7 @@ GPIO21, every SCL pin to GPIO22. No address conflicts (0x28 / 0x68 / 0x76 /
 | MS4525DO | I2C | SDA → GPIO21, SCL → GPIO22 | 0x28 | 5 V → VCC |
 | GY-91 | I2C | SDA → GPIO21, SCL → GPIO22; NCS, CSB, SDO/SAO unconnected | 0x68 (MPU) + 0x76 (BMP280); 0x0C (mag, after bypass) | 5 V → VIN |
 | PCA9685 | I2C | SDA → GPIO21, SCL → GPIO22 | 0x40 | 5 V → VCC (servo rail V+ separate — see below) |
-| GPS | UART2 | TX → GPIO16 (RX2), RX → GPIO17 (TX2) | — | 5 V → VCC (check module rating) |
+| GPS — **currently wired in** | UART2 | TX → GPIO16 (RX2), RX → GPIO17 (TX2); PPS, EN unconnected | — | 5 V → VCC (onboard LDO; TX/RX stay 3.3 V logic) |
 
 Common ground for everything.
 

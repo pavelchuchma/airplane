@@ -1,11 +1,16 @@
 """Serial telemetry source - the air ESP32 over USB serial (default mode).
 
-Reads CSV lines (roll,pitch,yaw,rollspeed,pitchspeed,yawspeed,alt,climb -
-rad, rad/s, m relative to boot location, m/s; 50 Hz, see ../esp32/src/air/)
-and publishes them to the TelemetryHub as MAVLink ATTITUDE + VFR_HUD +
-ALTITUDE plus a 1 Hz HEARTBEAT. alt/climb come from the BMP280 barometer
-and are "nan" when it is missing - VFR_HUD/ALTITUDE are then skipped.
-Lines starting with '#' are firmware boot diagnostics.
+Reads CSV lines (roll,pitch,yaw,rollspeed,pitchspeed,yawspeed,alt,climb,
+lat,lon,alt_msl,gs,cog,sats,hdop,hacc,vacc - rad, rad/s, m relative to boot
+location, m/s, then degrees/m/mps/degrees plus 1-sigma error estimates in m
+for the GPS block; 50 Hz, see ../esp32/src/air/) and publishes them to the
+TelemetryHub as MAVLink
+ATTITUDE + VFR_HUD + ALTITUDE + GPS_RAW_INT + GLOBAL_POSITION_INT plus a
+1 Hz HEARTBEAT. alt/climb come from the BMP280 barometer and are "nan"
+when it is missing - VFR_HUD/ALTITUDE are then skipped. lat..cog are "nan"
+without a GPS fix - GPS_RAW_INT is still sent (fix type + satellite count
+for preflight), GLOBAL_POSITION_INT is skipped. Lines starting with '#'
+are firmware boot diagnostics.
 
 By default the serial port is resolved by the air board's factory MAC
 address (the boards' clone CP2102s share one USB serial number, so port
@@ -26,6 +31,7 @@ import threading
 import time
 
 import serial
+from pymavlink import mavutil
 
 from .telemetry import heartbeat
 
@@ -50,7 +56,7 @@ def find_air_port():
 
 def parse_line(line):
     parts = line.strip().split(",")
-    if len(parts) != 8:
+    if len(parts) != 17:
         return None
     try:
         return tuple(float(p) for p in parts)
@@ -98,9 +104,14 @@ class SerialSource:
                 if values is None:
                     continue  # e.g. startup/calibration output or a truncated line
 
-                roll, pitch, yaw, rollspeed, pitchspeed, yawspeed, alt_m, climb_mps = values
+                (
+                    roll, pitch, yaw, rollspeed, pitchspeed, yawspeed, alt_m, climb_mps,
+                    lat_deg, lon_deg, alt_msl_m, gs_mps, cog_deg, sats, hdop,
+                    hacc_m, vacc_m,
+                ) = values
                 now = time.monotonic()
                 time_boot_ms = int((now - start) * 1000) & 0xFFFFFFFF
+                time_usec = int((now - start) * 1e6) & 0xFFFFFFFFFFFFFFFF
 
                 if now - last_heartbeat >= HEARTBEAT_PERIOD_S:
                     self._hub.publish(heartbeat(self._hub.mav))
@@ -113,14 +124,14 @@ class SerialSource:
                 )
 
                 if not math.isnan(alt_m):
-                    # No airspeed/groundspeed/throttle sensors yet; heading is
-                    # the (drifting) integrated yaw. VFR_HUD.alt nominally is
+                    # No airspeed/throttle sensors yet; heading is the
+                    # (drifting) integrated yaw. VFR_HUD.alt nominally is
                     # AMSL but we only have the baro-relative altitude - the
                     # HUD prefers ALTITUDE.altitude_relative anyway.
                     self._hub.publish(
                         self._hub.mav.vfr_hud_encode(
                             0.0,
-                            0.0,
+                            0.0 if math.isnan(gs_mps) else gs_mps,
                             int(math.degrees(yaw)) % 360,
                             0,
                             alt_m,
@@ -129,7 +140,7 @@ class SerialSource:
                     )
                     self._hub.publish(
                         self._hub.mav.altitude_encode(
-                            int((now - start) * 1e6) & 0xFFFFFFFFFFFFFFFF,
+                            time_usec,
                             float("nan"),  # altitude_monotonic
                             float("nan"),  # altitude_amsl - unknown (no QNH)
                             alt_m,  # altitude_local (relative to boot location)
@@ -138,3 +149,63 @@ class SerialSource:
                             float("nan"),  # bottom_clearance
                         )
                     )
+
+                self._publish_gps(
+                    time_usec, time_boot_ms, lat_deg, lon_deg, alt_msl_m,
+                    gs_mps, cog_deg, sats, hdop, hacc_m, vacc_m, alt_m, climb_mps,
+                )
+
+    def _publish_gps(
+        self, time_usec, time_boot_ms, lat_deg, lon_deg, alt_msl_m,
+        gs_mps, cog_deg, sats, hdop, hacc_m, vacc_m, alt_m, climb_mps,
+    ):
+        """GPS_RAW_INT always (sats visible while acquiring), GPI only with a fix.
+
+        Scaling mirrors emulator_source.py: 1e7 deg, mm, cm/s, centidegrees;
+        65535 / UINT16_MAX marks unknown eph/vel/cog per the MAVLink spec,
+        0 marks unknown h_acc/v_acc (MAVLink 2 extension fields, in mm).
+        """
+        fix = not (math.isnan(lat_deg) or math.isnan(lon_deg))
+        self._hub.publish(
+            self._hub.mav.gps_raw_int_encode(
+                time_usec,
+                mavutil.mavlink.GPS_FIX_TYPE_3D_FIX if fix else mavutil.mavlink.GPS_FIX_TYPE_NO_FIX,
+                int(lat_deg * 1e7) if fix else 0,
+                int(lon_deg * 1e7) if fix else 0,
+                0 if math.isnan(alt_msl_m) else int(alt_msl_m * 1000),
+                65535 if math.isnan(hdop) else min(int(hdop * 100), 65535),
+                65535,  # epv - the firmware does not report VDOP
+                65535 if math.isnan(gs_mps) else int(gs_mps * 100),
+                65535 if math.isnan(cog_deg) else int(cog_deg * 100) % 36000,
+                int(sats),
+                0,  # alt_ellipsoid - not reported
+                0 if math.isnan(hacc_m) else int(hacc_m * 1000),
+                0 if math.isnan(vacc_m) else int(vacc_m * 1000),
+                0,  # vel_acc - not reported
+                0,  # hdg_acc - not reported
+            )
+        )
+        if not fix:
+            return
+
+        if math.isnan(cog_deg) or math.isnan(gs_mps):
+            vx = vy = 0
+        else:
+            cog_rad = math.radians(cog_deg)
+            vx = int(gs_mps * math.cos(cog_rad) * 100)
+            vy = int(gs_mps * math.sin(cog_rad) * 100)
+        # COG only counts as heading when actually moving; UINT16_MAX = unknown
+        moving = not math.isnan(gs_mps) and gs_mps > 1.0 and not math.isnan(cog_deg)
+        self._hub.publish(
+            self._hub.mav.global_position_int_encode(
+                time_boot_ms,
+                int(lat_deg * 1e7),
+                int(lon_deg * 1e7),
+                0 if math.isnan(alt_msl_m) else int(alt_msl_m * 1000),
+                0 if math.isnan(alt_m) else int(alt_m * 1000),  # baro relative alt
+                vx,
+                vy,
+                0 if math.isnan(climb_mps) else int(-climb_mps * 100),
+                int(cog_deg * 100) % 36000 if moving else 65535,
+            )
+        )

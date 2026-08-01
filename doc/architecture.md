@@ -54,11 +54,17 @@ altitude/vario from the BMP280 barometer (relative to the boot location,
 translated to MAVLink VFR_HUD + ALTITUDE by cocpitView). Note the GY-91 turned
 out to carry an MPU-6500, not the advertised MPU-9250 — there is no
 magnetometer, so yaw is gyro-integration only and drifts; the plan is to
-correct it from GPS course-over-ground once GPS is on board (fine for a
-fixed-wing, and it avoids compass calibration entirely). The remaining gap to
-the target topology is the ESP-NOW link — today the air ESP32 plugs directly
-into the PC and speaks CSV; the ground bridge and the `lib/protocol/` wire
-format are not in use yet.
+correct it from GPS course-over-ground (fine for a fixed-wing, and it avoids
+compass calibration entirely). The Quescan G10A-F30 GPS (u-blox M10) is on
+UART2: the firmware configures it at every boot (flash-less chip — 5 Hz nav
+rate, airborne dynamic model, RMC+GGA only) and appends position/groundspeed/
+course/fix-quality to the CSV; cocpitView forwards them as GPS_RAW_INT +
+GLOBAL_POSITION_INT, which gives QGC the map position and the HUD its
+flight-path marker, AGL readout and a GPS fix/satellite status line. The
+remaining gap to the target topology is the ESP-NOW link — today the air
+ESP32 plugs directly into the PC and speaks CSV; the ground bridge and the
+`lib/protocol/` wire format are not in use yet. The GPS course-over-ground
+yaw correction (above a groundspeed threshold) is the other open follow-up.
 
 ## Design decisions
 

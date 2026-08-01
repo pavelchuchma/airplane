@@ -8,8 +8,8 @@ QGroundControl over UDP - both consumers see identical data.
 Handled message types:
   - emulator_source.py: ATTITUDE + VFR_HUD + GPS_RAW_INT +
     GLOBAL_POSITION_INT + ALTITUDE
-  - serial_source.py: ATTITUDE + VFR_HUD + ALTITUDE (baro altitude/vario;
-    speed/position/velocity stay invalid)
+  - serial_source.py: the same set (baro altitude/vario; position/velocity
+    from the GPS - GLOBAL_POSITION_INT only while there is a fix)
 """
 
 import math
@@ -48,6 +48,12 @@ class TelemetrySnapshot:
     lat_deg: float = 0.0
     lon_deg: float = 0.0
     gpi_ts: float = field(default=-math.inf)
+
+    # GPS_RAW_INT (fix quality, even without a fix)
+    gps_fix_type: int = 0
+    gps_sats: int = 0
+    gps_hacc_m: float | None = None  # 1-sigma horizontal error [m]
+    gps_ts: float = field(default=-math.inf)
 
     # ALTITUDE message
     alt_relative_m: float = 0.0
@@ -128,6 +134,14 @@ class TelemetrySnapshot:
         return None
 
     @property
+    def gps_status(self):
+        """(fix_type, satellites, hacc_m) from GPS_RAW_INT, or None when
+        stale; hacc_m is None when the receiver reports no error estimate."""
+        if not self._fresh(self.gps_ts):
+            return None
+        return (self.gps_fix_type, self.gps_sats, self.gps_hacc_m)
+
+    @property
     def velocity_ned(self):
         """(vn, ve, vd) in m/s for the flight path marker, or None."""
         if not self._fresh(self.gpi_ts):
@@ -150,6 +164,13 @@ def apply_message(s, msg, now):
         s.vfr_alt_m = msg.alt
         s.climb_mps = msg.climb
         s.vfr_ts = now
+    elif mtype == "GPS_RAW_INT":
+        s.gps_fix_type = msg.fix_type
+        s.gps_sats = msg.satellites_visible
+        # MAVLink 2 extension, mm; 0 = unknown (also from MAVLink 1 senders)
+        h_acc = getattr(msg, "h_acc", 0)
+        s.gps_hacc_m = h_acc / 1000.0 if h_acc else None
+        s.gps_ts = now
     elif mtype == "GLOBAL_POSITION_INT":
         s.vn = msg.vx / 100.0
         s.ve = msg.vy / 100.0
