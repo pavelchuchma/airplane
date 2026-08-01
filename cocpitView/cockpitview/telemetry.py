@@ -1,12 +1,14 @@
-"""MAVLink telemetry receiver.
+"""MAVLink telemetry hub.
 
-Listens on a UDP port for MAVLink messages forwarded by QGroundControl
-(Application Settings -> MAVLink -> MAVLink Forwarding, host `localhost:14445`)
-and keeps the latest vehicle state in a thread-safe snapshot.
+Telemetry sources (serial_source.py, emulator_source.py) encode pymavlink
+messages and publish() them here. The hub applies every message to a
+thread-safe TelemetrySnapshot for the HUD and forwards it unchanged to
+QGroundControl over UDP - both consumers see identical data.
 
-Handles both telemetry sources of this project:
-  - mpu6050_emulator.py: ATTITUDE + VFR_HUD + GLOBAL_POSITION_INT + ALTITUDE
-  - mpu6050_hw_bridge.py: ATTITUDE only (speed/altitude/velocity stay invalid)
+Handled message types:
+  - emulator_source.py: ATTITUDE + VFR_HUD + GPS_RAW_INT +
+    GLOBAL_POSITION_INT + ALTITUDE
+  - serial_source.py: ATTITUDE only (speed/altitude/velocity stay invalid)
 """
 
 import math
@@ -125,61 +127,78 @@ class TelemetrySnapshot:
         return (self.vn, self.ve, self.vd)
 
 
-class TelemetryReceiver:
-    """Background thread reading MAVLink from a UDP port."""
+def apply_message(s, msg, now):
+    """Applies a MAVLink message to a TelemetrySnapshot (not thread-safe)."""
+    mtype = msg.get_type()
+    if mtype == "ATTITUDE":
+        s.roll = msg.roll
+        s.pitch = msg.pitch
+        s.yaw = msg.yaw
+        s.attitude_ts = now
+    elif mtype == "VFR_HUD":
+        s.airspeed_mps = msg.airspeed
+        s.groundspeed_mps = msg.groundspeed
+        s.vfr_heading_deg = float(msg.heading)
+        s.vfr_alt_m = msg.alt
+        s.climb_mps = msg.climb
+        s.vfr_ts = now
+    elif mtype == "GLOBAL_POSITION_INT":
+        s.vn = msg.vx / 100.0
+        s.ve = msg.vy / 100.0
+        s.vd = msg.vz / 100.0
+        s.gpi_heading_deg = msg.hdg / 100.0
+        s.gpi_rel_alt_m = msg.relative_alt / 1000.0
+        s.gpi_alt_amsl_m = msg.alt / 1000.0
+        s.lat_deg = msg.lat / 1e7
+        s.lon_deg = msg.lon / 1e7
+        s.gpi_ts = now
+    elif mtype == "ALTITUDE":
+        if not math.isnan(msg.altitude_relative):
+            s.alt_relative_m = msg.altitude_relative
+            s.alt_ts = now
+        if not math.isnan(msg.altitude_amsl):
+            s.alt_amsl_m = msg.altitude_amsl
+            s.alt_amsl_ts = now
+    elif mtype == "HEARTBEAT":
+        s.heartbeat_ts = now
 
-    def __init__(self, port=14445, host="0.0.0.0"):
+
+def heartbeat(mav):
+    """The fixed-wing HEARTBEAT both telemetry sources publish at 1 Hz."""
+    return mav.heartbeat_encode(
+        mavutil.mavlink.MAV_TYPE_FIXED_WING,
+        mavutil.mavlink.MAV_AUTOPILOT_GENERIC,
+        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+        0,
+        mavutil.mavlink.MAV_STATE_ACTIVE,
+    )
+
+
+class TelemetryHub:
+    """Distributes messages from a telemetry source to the HUD snapshot and QGC."""
+
+    def __init__(self, qgc_host="127.0.0.1", qgc_port=14550, system_id=1):
         self._state = TelemetrySnapshot()
         self._lock = threading.Lock()
-        self._conn = mavutil.mavlink_connection(f"udpin:{host}:{port}")
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._conn = mavutil.mavlink_connection(
+            f"udpout:{qgc_host}:{qgc_port}",
+            source_system=system_id,
+            source_component=mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1,
+        )
 
-    def start(self):
-        self._thread.start()
+    @property
+    def mav(self):
+        """MAVLink encoder for sources: hub.publish(hub.mav.attitude_encode(...))."""
+        return self._conn.mav
+
+    def publish(self, msg):
+        now = time.monotonic()
+        with self._lock:
+            apply_message(self._state, msg, now)
+        self._conn.mav.send(msg)
 
     def snapshot(self):
         with self._lock:
             snap = TelemetrySnapshot(**vars(self._state))
         snap.now = time.monotonic()
         return snap
-
-    def _run(self):
-        while True:
-            msg = self._conn.recv_match(blocking=True, timeout=1.0)
-            if msg is None:
-                continue
-            now = time.monotonic()
-            mtype = msg.get_type()
-            with self._lock:
-                s = self._state
-                if mtype == "ATTITUDE":
-                    s.roll = msg.roll
-                    s.pitch = msg.pitch
-                    s.yaw = msg.yaw
-                    s.attitude_ts = now
-                elif mtype == "VFR_HUD":
-                    s.airspeed_mps = msg.airspeed
-                    s.groundspeed_mps = msg.groundspeed
-                    s.vfr_heading_deg = float(msg.heading)
-                    s.vfr_alt_m = msg.alt
-                    s.climb_mps = msg.climb
-                    s.vfr_ts = now
-                elif mtype == "GLOBAL_POSITION_INT":
-                    s.vn = msg.vx / 100.0
-                    s.ve = msg.vy / 100.0
-                    s.vd = msg.vz / 100.0
-                    s.gpi_heading_deg = msg.hdg / 100.0
-                    s.gpi_rel_alt_m = msg.relative_alt / 1000.0
-                    s.gpi_alt_amsl_m = msg.alt / 1000.0
-                    s.lat_deg = msg.lat / 1e7
-                    s.lon_deg = msg.lon / 1e7
-                    s.gpi_ts = now
-                elif mtype == "ALTITUDE":
-                    if not math.isnan(msg.altitude_relative):
-                        s.alt_relative_m = msg.altitude_relative
-                        s.alt_ts = now
-                    if not math.isnan(msg.altitude_amsl):
-                        s.alt_amsl_m = msg.altitude_amsl
-                        s.alt_amsl_ts = now
-                elif mtype == "HEARTBEAT":
-                    s.heartbeat_ts = now

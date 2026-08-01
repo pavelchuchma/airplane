@@ -12,8 +12,8 @@
  *   roll,pitch,yaw,rollspeed,pitchspeed,yawspeed\n   (roll/pitch/yaw in radians,
  *                                                       *speed in radians/s)
  *
- * The lines are read by emulator/mpu6050_hw_bridge.py, which forwards them to
- * QGroundControl as MAVLink ATTITUDE over UDP.
+ * The lines are read by cocpitView (cockpitview/serial_source.py), which
+ * forwards them to QGroundControl as MAVLink ATTITUDE over UDP.
  *
  * Wiring MPU-6050 -> ESP32:
  *   VCC -> 3V3, GND -> GND, SCL -> GPIO22, SDA -> GPIO21, AD0 -> GND (I2C address 0x68)

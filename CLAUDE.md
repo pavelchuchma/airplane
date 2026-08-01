@@ -16,7 +16,6 @@ decisions. Keep it updated when the design evolves.
   do not "fix" either.
 - `arduinoNano/` — legacy MPU-6050 firmware (Arduino Nano), the predecessor
   of the esp32 air firmware.
-- `emulator/` — MPU6050 emulator for development without hardware.
 - `doc/` — `architecture.md` plus hardware parts notes in `parts/`.
 
 ## Commands
@@ -42,8 +41,14 @@ decisions. Keep it updated when the design evolves.
 
 - `esp32/src/air` is a 1:1 port of the arduinoNano MPU-6050 firmware: the air
   ESP32 connects directly to the PC over USB serial (CSV lines, 115200 baud),
-  no ESP-NOW yet. `esp32/src/ground` is still an empty skeleton.
-- Telemetry still flows the old way: ESP → `mpu6050_hw_bridge.py` → QGC →
-  cocpitView. Target flow (see architecture.md) is not built yet.
-- Next step: move telemetry onto the ESP-NOW link (air → ground bridge →
-  cocpitView) using the protocol structs in `esp32/lib/protocol/`.
+  no ESP-NOW yet. `esp32/src/ground` is still an empty skeleton. The IMU on
+  the airframe is now a GY-91 (MPU-9250 + BMP280) — drop-in compatible with
+  the MPU-6050 code; magnetometer and barometer are not read yet.
+- cocpitView is the telemetry hub: it reads the air ESP32's serial CSV
+  directly (or a built-in emulator via `--emulator`) and forwards MAVLink to
+  QGC (UDP 14550). The old standalone `emulator/mpu6050_*.py` scripts are
+  gone; the flight-profile emulator lives in the `cockpitview` package.
+- Next steps: move telemetry onto the ESP-NOW link (air → ground bridge →
+  cocpitView) using the protocol structs in `esp32/lib/protocol/`; read the
+  GY-91 extras (magnetometer → drift-free yaw, BMP280 → altitude/vario) in
+  the air firmware.

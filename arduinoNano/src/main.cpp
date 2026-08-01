@@ -1,5 +1,6 @@
 /*
- * arduinoNano - physical counterpart of emulator/mpu6050_emulator.py.
+ * arduinoNano - legacy firmware, predecessor of esp32/src/air (physical
+ * counterpart of the cocpitView flight-profile emulator).
  *
  * Reads the accelerometer/gyroscope from an MPU-6050 over I2C (Wire), computes
  * roll/pitch with a complementary filter (yaw is gyro-integration only - no
@@ -9,8 +10,8 @@
  *   roll,pitch,yaw,rollspeed,pitchspeed,yawspeed\n   (roll/pitch/yaw in radians,
  *                                                       *speed in radians/s)
  *
- * The lines are read by emulator/mpu6050_hw_bridge.py, which forwards them to
- * QGroundControl as MAVLink ATTITUDE over UDP.
+ * The lines are read by cocpitView (cockpitview/serial_source.py), which
+ * forwards them to QGroundControl as MAVLink ATTITUDE over UDP.
  *
  * Wiring MPU-6050 -> Arduino Nano:
  *   VCC -> 5V, GND -> GND, SCL -> A5, SDA -> A4, AD0 -> GND (I2C address 0x68)

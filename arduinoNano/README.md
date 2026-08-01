@@ -1,10 +1,11 @@
 # Arduino Nano + MPU-6050 - physical version of the emulator
 
-Physical counterpart of `../emulator/mpu6050_emulator.py`: instead of a
-synthetically generated attitude, it reads a real MPU-6050 over I2C, computes
+Physical counterpart of the cocpitView flight-profile emulator
+(`../cocpitView/cockpitview/emulator_source.py`): instead of a synthetically
+generated attitude, it reads a real MPU-6050 over I2C, computes
 roll/pitch/yaw and sends it over USB serial. Without a magnetometer/baro/GPS
-it can't provide heading (drifts), altitude, or position - same limitation
-already noted in `../emulator/README.md`.
+it can't provide heading (drifts), altitude, or position. Legacy - superseded
+by `../esp32/src/air`.
 
 ## Hardware
 
@@ -53,7 +54,7 @@ line is terminated with `\n` (`Serial.println`).
 
 `pio device monitor` is only an interactive debugging tool (it adds its own
 timestamps/colors and holds the port exclusively) - it's not suitable as a
-data source for further processing. Instead use
-`../emulator/mpu6050_hw_bridge.py`, which opens the port directly via
-`pyserial` and forwards the lines as MAVLink `HEARTBEAT`/`ATTITUDE` to QGC
-over UDP - see `../emulator/README.md`.
+data source for further processing. Instead use cocpitView
+(`../cocpitView/cockpitview/serial_source.py`, `--serial-port` to point it at
+the Nano), which opens the port directly via `pyserial` and forwards the
+lines as MAVLink `HEARTBEAT`/`ATTITUDE` to QGC over UDP.

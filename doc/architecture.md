@@ -46,10 +46,12 @@ Data flows:
 
 ## Current vs. target state
 
-Today telemetry takes the path
-`ESP → mpu6050_hw_bridge.py → QGC → cocpitView`. Once the ground bridge and
-the cocpitView serial module exist, `mpu6050_hw_bridge.py` is retired and
-cocpitView becomes the hub that feeds QGC.
+cocpitView is already the hub: it reads telemetry itself (USB serial from the
+air ESP32 by default, or a built-in flight-profile emulator via `--emulator`)
+and feeds QGC over MAVLink/UDP. The standalone `mpu6050_*.py` scripts are
+retired. The remaining gap to the target topology is the ESP-NOW link — today
+the air ESP32 plugs directly into the PC and speaks CSV; the ground bridge and
+the `lib/protocol/` wire format are not in use yet.
 
 ## Design decisions
 

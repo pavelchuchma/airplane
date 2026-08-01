@@ -17,7 +17,7 @@ controller / MPU-6050 after sensor fusion would report it.
 
 import math
 
-import quaternion as quat
+from . import quaternion as quat
 
 # Home position and airspeed (given)
 HOME_LAT_DEG = 50.000000

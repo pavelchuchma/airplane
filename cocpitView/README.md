@@ -1,8 +1,10 @@
 # Cockpit View
 
 FPV video z USB kamery (5.8G přijímač → "AV TO USB2.0" grabber) s HUD overlayem
-ve stylu F-16 (NAV mód). Telemetrie přichází jako MAVLink forward
-z QGroundControl přes UDP.
+ve stylu F-16 (NAV mód). Telemetrii si aplikace čte sama — defaultně ze
+sériového portu air ESP32, s `--emulator` ze syntetického letového profilu —
+a přeposílá ji jako MAVLink do QGroundControl (UDP, default `127.0.0.1:14550`).
+QGC je tedy jen volitelný downstream konzument; HUD běží i bez něj.
 
 ## HUD prvky
 
@@ -29,14 +31,20 @@ python3 -m venv .venv
 ## Spuštění
 
 ```bash
-./run.sh                        # venv python, OTG kamera, MAVLink :14445
+./run.sh                        # venv python, OTG kamera, telemetrie z air ESP32
 ./run.sh --fullscreen --fov 45  # argumenty se předávají dál
-./.venv/bin/python -m cockpitview --no-camera    # jen HUD bez kamery
+./.venv/bin/python -m cockpitview --emulator --no-camera   # HUD nad emulátorem, bez kamery
 ```
 
 | Volba | Default | Význam |
 |---|---|---|
-| `--mavlink-port` | 14445 | UDP port, kam QGC forwarduje MAVLink |
+| `--emulator` | — | syntetický letový profil místo čtení air ESP32 |
+| `--serial-port` | autodetekce | sériový port air ESP32 (default: podle factory MAC z `esp32/platformio.ini`) |
+| `--baud` | 115200 | baud rate sériové linky |
+| `--rate` | 20 | frekvence telemetrie emulátoru [Hz] |
+| `--qgc-host` | 127.0.0.1 | IP adresa QGroundControl pro MAVLink forward |
+| `--qgc-port` | 14550 | UDP port QGroundControl |
+| `--system-id` | 1 | MAVLink system id vozidla |
 | `--camera-name` | `AV TO USB2.0` | jméno kamery, na kterou se aplikace výhradně váže |
 | `--camera` | — | vynutit cv2 index (přeskočí hledání podle jména) |
 | `--width`/`--height` | 960×640 | velikost okna (okno lze měnit myší) |
@@ -58,17 +66,17 @@ Při prvním spuštění si macOS vyžádá povolení kamery pro terminál
 ## Zapojení telemetrie
 
 ```
-model / emulátor --MAVLink UDP:14550--> QGroundControl --forward UDP:14445--> cockpit view
+air ESP32 (USB serial, CSV) ──┐
+                              ├──> cockpit view ──MAVLink UDP:14550──> QGroundControl
+--emulator (letový profil) ───┘         │
+                                        └──> HUD (přímo, bez QGC)
 ```
 
-V QGC: **Application Settings → MAVLink → MAVLink Forwarding**:
-Enable + host `localhost:14445`.
-
-### Test bez QGC (emulátor přímo)
-
-```bash
-cd ../emulator && ./.venv/bin/python mpu6050_emulator.py --port 14445
-```
+Defaultní režim čte CSV řádky z air ESP32 (port se hledá podle factory MAC,
+probe board resetuje — viz `esp32/tools/board_id.py`). Když board chybí nebo
+linka spadne, aplikace to zkouší dál (HUD ukazuje `NO TELEMETRY`) a po
+připojení se sama chytne. QGC stačí spustit — na UDP 14550 poslouchá
+automaticky a vozidlo se objeví samo.
 
 ## Výška nad terénem (AGL)
 
@@ -91,16 +99,20 @@ Pozor: DMR 5G pokrývá jen ČR — nad slovenskou stranou hranice údaj zmizí.
 
 ### Reálný MPU-6050 (jen attitude)
 
-`../emulator/mpu6050_hw_bridge.py` posílá jen ATTITUDE — HUD pak ukazuje
-horizont/roll/heading (z yaw), rychlost a výška zůstanou `---` a místo
-flight path markeru je boresight kříž.
+Air ESP32 zatím posílá jen attitude (roll/pitch/yaw + úhlové rychlosti) —
+HUD ukazuje horizont/roll/heading (z yaw), rychlost a výška zůstanou `---`
+a místo flight path markeru je boresight kříž.
 
 ## Soubory
 
 - `run.sh` — launcher (venv python, `python -m cockpitview`)
 - `cockpitview/__main__.py` — main, pygame render loop
+- `cockpitview/telemetry.py` — TelemetryHub: thread-safe snapshot pro HUD + MAVLink forward do QGC
+- `cockpitview/serial_source.py` — čtení air ESP32 (CSV → ATTITUDE), autodetekce portu, reconnect
+- `cockpitview/emulator_source.py` — syntetická telemetrie z letového profilu (`--emulator`)
+- `cockpitview/flight_profile.py` — skriptovaný letový profil (přímý let, zatáčky, loop)
+- `cockpitview/quaternion.py` — kvaternionové výpočty orientace pro emulátor
 - `cockpitview/hud.py` — F-16 HUD renderer
-- `cockpitview/telemetry.py` — MAVLink receiver (vlákno, thread-safe snapshot)
 - `cockpitview/camera.py` — USB kamera přes OpenCV/AVFoundation (vlákno, poslední frame)
 - `cockpitview/terrain.py` — elevace terénu z mřížky, bilineární lookup
 - `cockpitview/terrain_fetch.py` — jednorázové stažení mřížky z ČÚZK DMR 5G

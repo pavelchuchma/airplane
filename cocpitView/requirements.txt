@@ -1,6 +1,8 @@
 pygame
 opencv-python-headless==4.12.0.88  # >=4.13 bundles libSDL2 (via ffmpeg avdevice), which clashes with pygame's SDL2 on macOS
 pymavlink
+pyserial
+esptool  # air-board serial port resolution by factory MAC (esp32/tools/board_id.py)
 numpy
 pyobjc-framework-AVFoundation
 tifffile  # only for terrain_fetch.py (CUZK DMR 5G download)
