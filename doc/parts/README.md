@@ -26,16 +26,18 @@ One document per part with full specs, pinout and wiring notes.
 
 ## Wiring quick reference (all sensors on one ESP32)
 
-```
-ESP32 GPIO21 (SDA) ──┬── MS4525DO SDA        (0x28)
-ESP32 GPIO22 (SCL) ──┴── GY-91 SDA/SCL       (0x68 + 0x76)
-ESP32 GPIO16 (RX2) ───── GPS TX
-ESP32 GPIO17 (TX2) ───── GPS RX
-5V  ── MS4525DO VCC, GY-91 VIN, GPS VCC (check module rating)
-GND ── common ground
-```
+All I2C devices sit **in parallel on one shared bus**: every SDA pin goes to
+GPIO21, every SCL pin to GPIO22. No address conflicts (0x28 / 0x68 / 0x76 /
+0x0C / 0x40).
 
-All I2C devices share one bus — no address conflicts (0x28 / 0x68 / 0x76 / 0x0C / 0x40 PCA9685).
+| Device | Interface | Device pin → ESP32 pin | Address(es) | Power |
+|---|---|---|---|---|
+| MS4525DO | I2C | SDA → GPIO21, SCL → GPIO22 | 0x28 | 5 V → VCC |
+| GY-91 | I2C | SDA → GPIO21, SCL → GPIO22; NCS, CSB, SDO/SAO unconnected | 0x68 (MPU) + 0x76 (BMP280); 0x0C (mag, after bypass) | 5 V → VIN |
+| PCA9685 | I2C | SDA → GPIO21, SCL → GPIO22 | 0x40 | 5 V → VCC (servo rail V+ separate — see below) |
+| GPS | UART2 | TX → GPIO16 (RX2), RX → GPIO17 (TX2) | — | 5 V → VCC (check module rating) |
+
+Common ground for everything.
 
 ⚠️ Exception: the **MPU-6050 (currently wired in)** and the GY-91's MPU-9250 both default to **0x68** — when both are connected, pull AD0/SAO high on one of them (→ 0x69).
 
