@@ -13,7 +13,7 @@ Usage:
     ./.venv/bin/python -m cockpitview --camera 1 --fullscreen --fov 45
     ./.venv/bin/python -m cockpitview --emulator --no-camera
 
-Keys: ESC / Q quit, F toggles fullscreen.
+Keys: Cmd+Q quits.
 """
 
 import argparse
@@ -100,10 +100,8 @@ def main():
                 if event.type == pygame.QUIT:
                     return
                 if event.type == pygame.KEYDOWN:
-                    if event.key in (pygame.K_ESCAPE, pygame.K_q):
+                    if event.key == pygame.K_q and event.mod & pygame.KMOD_META:
                         return
-                    if event.key == pygame.K_f:
-                        pygame.display.toggle_fullscreen()
 
             size = screen.get_size()
             if size != (hud.w, hud.h):  # window resized or fullscreen toggled
