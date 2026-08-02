@@ -161,6 +161,13 @@ class TelemetrySnapshot:
         return (self.vn, self.ve, self.vd)
 
     @property
+    def groundspeed_kmh(self):
+        """GPS ground speed in km/h, or None without a (fresh) fix."""
+        if not self._fresh(self.gpi_ts):
+            return None
+        return math.hypot(self.vn, self.ve) * 3.6
+
+    @property
     def link_status(self):
         """(rssi_dbm, cmd_loss_pct, telem_loss_pct) or None when the source
         never reported link stats / they went stale; rssi_dbm is None until

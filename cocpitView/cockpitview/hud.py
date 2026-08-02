@@ -239,13 +239,21 @@ class Hud:
         base_x = rect.right if side < 0 else rect.left
         self._polygon(surface, [(tip_x, self.cy), (base_x, self.cy - 8), (base_x, self.cy + 8)])
 
-    def draw_airspeed(self, surface, kmh):
+    def draw_airspeed(self, surface, kmh, gs_kmh=None):
         x_axis = self.w * 0.17
         if kmh is not None:
             self._draw_vertical_tape(surface, x_axis, kmh, side=-1, unit_span=60, tick_step=5, label_step=20)
             self._value_box(surface, x_axis, f"{int(round(kmh)):3d}", side=-1)
         else:
             self._value_box(surface, x_axis, "---", side=-1)
+        if gs_kmh is not None:
+            # GPS ground speed ("G" prefix); IAS vs GS difference = wind component
+            self._text(
+                surface,
+                f"G {int(round(gs_kmh)):3d}",
+                (x_axis - self.w * 0.105, self.cy + self.h * 0.065),
+                anchor="center",
+            )
 
     def draw_altitude(self, surface, alt_m, agl_m=None, climb_mps=None):
         x_axis = self.w * 0.83
@@ -365,7 +373,7 @@ class Hud:
             self.draw_roll_indicator(surface, snap.roll)
         self.draw_flight_path_marker(surface, snap)
         self.draw_heading_tape(surface, snap.heading_deg)
-        self.draw_airspeed(surface, snap.airspeed_kmh)
+        self.draw_airspeed(surface, snap.airspeed_kmh, snap.groundspeed_kmh)
         self.draw_altitude(surface, snap.display_alt_m, snap.agl_m, snap.vario_mps)
         self._text(surface, "NAV", (self.w * 0.11, self.h * 0.88), anchor="midleft")
         self.draw_gps_status(surface, snap.gps_status)
