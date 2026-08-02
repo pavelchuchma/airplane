@@ -206,13 +206,14 @@ class EspNowSource:
         )
 
         if not math.isnan(t.baro_alt_m):
-            # No airspeed/throttle sensors yet; heading is the (drifting)
-            # integrated yaw. VFR_HUD.alt nominally is AMSL but we only have
-            # the baro-relative altitude - the HUD prefers
+            # Airspeed is the pitot IAS (NaN = no/dead sensor -> 0, same as
+            # before the sensor existed); no throttle sensor yet; heading is
+            # the (drifting) integrated yaw. VFR_HUD.alt nominally is AMSL
+            # but we only have the baro-relative altitude - the HUD prefers
             # ALTITUDE.altitude_relative anyway.
             self._hub.publish(
                 self._hub.mav.vfr_hud_encode(
-                    0.0,
+                    0.0 if math.isnan(t.ias_mps) else t.ias_mps,
                     0.0 if math.isnan(t.gs_mps) else t.gs_mps,
                     int(math.degrees(t.yaw)) % 360,
                     0,

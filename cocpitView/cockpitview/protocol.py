@@ -13,7 +13,7 @@ Frame layout on the ground bridge's serial link:
 import collections
 import struct
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 MSG_TELEMETRY = 0x01
 MSG_COMMAND = 0x02
@@ -23,19 +23,21 @@ TELEM_FLAG_GPS_FIX = 1 << 0
 TELEM_FLAG_FAILSAFE = 1 << 1
 TELEM_FLAG_VERSION_MISMATCH = 1 << 2
 TELEM_FLAG_BARO_OK = 1 << 3
+TELEM_FLAG_PITOT_OK = 1 << 4
 
 COMMAND_CHANNELS = 8
 NEUTRAL_CHANNELS = (0,) * COMMAND_CHANNELS  # surfaces neutral, throttle idle
 
-_TELEMETRY = struct.Struct("<BBBBI8f2i6fbBBB")
+_TELEMETRY = struct.Struct("<BBBBI10f2i6fbBBB")
 _COMMAND = struct.Struct("<BBBB8h")
-assert _TELEMETRY.size == 76, "telemetry layout drifted from messages.h"
+assert _TELEMETRY.size == 84, "telemetry layout drifted from messages.h"
 assert _COMMAND.size == 20, "command layout drifted from messages.h"
 
 Telemetry = collections.namedtuple(
     "Telemetry",
     "msg_id version flags sats time_boot_ms "
     "roll pitch yaw rollspeed pitchspeed yawspeed baro_alt_m climb_mps "
+    "diff_press_pa ias_mps "
     "lat1e7 lon1e7 alt_msl_m gs_mps cog_deg hdop hacc_m vacc_m "
     "rssi_dbm cmd_loss_pct tx_fail_pct last_cmd_version",
 )

@@ -6,7 +6,7 @@
 
 #include <stdint.h>
 
-constexpr uint8_t PROTOCOL_VERSION = 1;
+constexpr uint8_t PROTOCOL_VERSION = 2;
 
 // Both radios must sit on the same channel; set explicitly at bring-up.
 constexpr uint8_t WIFI_CHANNEL = 1;
@@ -19,6 +19,7 @@ constexpr uint8_t TELEM_FLAG_GPS_FIX = 1 << 0;           // lat1e7/lon1e7 valid
 constexpr uint8_t TELEM_FLAG_FAILSAFE = 1 << 1;          // no valid command for kFailsafeTimeoutMs
 constexpr uint8_t TELEM_FLAG_VERSION_MISMATCH = 1 << 2;  // last command had wrong version
 constexpr uint8_t TELEM_FLAG_BARO_OK = 1 << 3;
+constexpr uint8_t TELEM_FLAG_PITOT_OK = 1 << 4;
 
 // Air -> PC, 50 Hz. GPS fields repeat between the 5 Hz GPS updates; floats
 // keep the NAN-as-invalid convention of gps::Fix (survives struct.unpack).
@@ -32,6 +33,8 @@ struct __attribute__((packed)) TelemetryMessage {
   float rollRate, pitchRate, yawRate;  // body rates [rad/s]
   float baroAltM;                      // m relative to boot location, NAN = no baro
   float climbMps;                      // low-pass-filtered vario [m/s]
+  float diffPressPa;                   // pitot dP, zeroed at boot + filtered, NAN = no pitot
+  float iasMps;                        // indicated airspeed [m/s], NAN = no pitot
   int32_t lat1e7, lon1e7;              // deg * 1e7, valid iff TELEM_FLAG_GPS_FIX
   float altMslM, speedMps, courseDeg;  // NAN = unknown
   float hdop, hAccM, vAccM;            // NAN = unknown (hAcc/vAcc = 1-sigma [m])
@@ -40,7 +43,7 @@ struct __attribute__((packed)) TelemetryMessage {
   uint8_t txFailPct;                   // % of telemetry esp_now_send without ACK, last 1 s
   uint8_t lastCmdVersion;              // version byte of the last received command, 0 = none
 };
-static_assert(sizeof(TelemetryMessage) == 76, "wire format changed - bump PROTOCOL_VERSION");
+static_assert(sizeof(TelemetryMessage) == 84, "wire format changed - bump PROTOCOL_VERSION");
 
 constexpr uint8_t COMMAND_CHANNELS = 8;
 

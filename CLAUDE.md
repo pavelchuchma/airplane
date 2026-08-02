@@ -39,7 +39,7 @@ decisions. Keep it updated when the design evolves.
 
 ## Current state (update as work progresses)
 
-- The ESP-NOW link is live: `esp32/src/air` sends a 76 B `TelemetryMessage`
+- The ESP-NOW link is live: `esp32/src/air` sends an 84 B `TelemetryMessage`
   at 50 Hz and receives 50 Hz `CommandMessage`s (structs + COBS/CRC-16
   framing + shared radio bring-up in `esp32/lib/protocol/`; channel 1, LR
   mode, PMK/LMK encryption, peer MACs injected as `-DPEER_MAC_STR` by
@@ -57,6 +57,15 @@ decisions. Keep it updated when the design evolves.
   course-over-ground correction, not a compass. The BMP280 barometer is read
   (`src/air/bmp280.cpp`): altitude relative to boot location +
   low-pass-filtered vario.
+- The MS4525DO pitot (I2C 0x28, 5 V part on the shared bus) is read at 50 Hz
+  (`src/air/ms4525do.cpp`): zero offset averaged at every boot while
+  stationary (`calibratePitotZero()`, it drifts with temperature), dP
+  low-pass filtered (τ = 0.3 s), IAS = √(2·dP/1.225) with negative dP
+  clamped to 0. Telemetry carries `diffPressPa` + `iasMps` (NAN = no/dead
+  sensor, ~0.5 s of failed reads drops `TELEM_FLAG_PITOT_OK`); cocpitView
+  puts IAS into `VFR_HUD.airspeed`, which the HUD airspeed tape already
+  renders. Sensor temperature is decoded but not sent (future TAS
+  correction).
 - GPS (Quescan G10A-F30, u-blox M10) is on UART2 (GPIO16/17, 38400 baud),
   read via TinyGPSPlus (`src/air/gps.cpp`). The chip is flash-less, so the
   firmware re-applies config at every boot via raw UBX-CFG-VALSET frames:

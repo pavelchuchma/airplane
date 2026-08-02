@@ -67,6 +67,12 @@ elevation from a pre-fetched CUZK DMR 5G grid at the GPS *position*
 (`cockpitview/altimeter.py` — assumes the plane sits on the ground when the
 first fix arrives), then shows baro AMSL in the altitude box and
 `R = baro AMSL − terrain(position)` as the radar altitude.
+The MS4525DO pitot sensor sits on the same I2C bus (address 0x28): its zero
+offset is re-measured at every boot (the offset is tens of Pa and drifts
+with temperature — the airplane must be stationary), the differential
+pressure is low-pass filtered and converted to indicated airspeed at fixed
+sea-level density; both travel in telemetry and cocpitView feeds the IAS to
+`VFR_HUD.airspeed`, which drives the HUD's airspeed tape.
 
 The ESP-NOW link is implemented: the air firmware sends one `TelemetryMessage`
 per sample (50 Hz) and receives `CommandMessage`s (lib/protocol/messages.h),
@@ -108,8 +114,8 @@ yaw correction (above a groundspeed threshold).
   - ESP32 long-range mode (`WIFI_PROTOCOL_LR`) is enabled — the default
     ESP-NOW range is marginal for flying.
 - **Chosen link parameters** (see `lib/protocol/`):
-  - one combined 76 B `TelemetryMessage` at 50 Hz (GPS fields simply repeat
-    between the 5 Hz GPS updates) — ~3.8 kB/s, comfortable even at the LR
+  - one combined 84 B `TelemetryMessage` at 50 Hz (GPS fields simply repeat
+    between the 5 Hz GPS updates) — ~4.2 kB/s, comfortable even at the LR
     mode's reduced bitrate, and one parse path instead of two;
   - serial framing `COBS(payload‖CRC-16/CCITT-FALSE) + 0x00` — fixed +1 B
     COBS overhead and trivial resync on the delimiter; the ground UART runs

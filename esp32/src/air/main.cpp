@@ -10,6 +10,10 @@
  *   - BMP280 barometer (0x76): altitude relative to the boot reference
  *     pressure plus a low-pass-filtered climb rate (vario).
  *
+ * Reads the MS4525DO pitot sensor (0x28, same I2C bus): differential
+ * pressure zeroed at boot (stationary airplane) and low-pass filtered,
+ * plus indicated airspeed at fixed sea-level density.
+ *
  * Reads the Quescan G10A-F30 GPS (u-blox M10) over UART2 (see gps.h).
  *
  * Telemetry goes out over ESP-NOW as one TelemetryMessage per sample
@@ -31,6 +35,9 @@
  * Wiring GY-91 -> ESP32:
  *   VIN -> 3V3, GND -> GND, SCL -> GPIO22, SDA -> GPIO21,
  *   SAO/SDO -> GND (MPU at 0x68), NCS + CSB unconnected (I2C mode)
+ * Wiring MS4525DO -> ESP32:
+ *   VCC -> 5V, GND -> GND, SCL -> GPIO22, SDA -> GPIO21 (shared bus, 3.3 V
+ *   pull-ups; the sensor is a 5 V part with open-drain I2C - safe)
  * Wiring GPS -> ESP32:
  *   VCC -> 5V, GND -> GND, TX -> GPIO16, RX -> GPIO17, PPS + EN unconnected
  *
@@ -48,6 +55,7 @@
 #include "espnow_link.h"
 #include "gps.h"
 #include "messages.h"
+#include "ms4525do.h"
 
 namespace {
 
@@ -65,6 +73,11 @@ constexpr uint32_t kBaroIntervalUs = 40000;   // 25 Hz, just under the BMP280's 
 constexpr int kBaroReferenceSamples = 25;     // 1 s average defining altitude zero
 constexpr float kVarioTimeConstant = 0.5f;    // [s] climb-rate low-pass
 
+constexpr int kPitotZeroSamples = 50;             // 1 s average defining pressure zero
+constexpr float kAirspeedTimeConstant = 0.3f;     // [s] differential-pressure low-pass
+constexpr int kPitotMaxConsecutiveFailures = 25;  // ~0.5 s of failed reads = sensor dead
+constexpr float kAirDensity = 1.225f;  // [kg/m3] fixed sea-level rho - the result is IAS
+
 float gyroBiasX = 0.0f, gyroBiasY = 0.0f, gyroBiasZ = 0.0f;
 float roll = 0.0f, pitch = 0.0f, yaw = 0.0f;
 uint32_t lastSampleUs = 0;
@@ -74,6 +87,13 @@ float baroReferencePa = 0.0f;
 float altitudeM = NAN;
 float climbRate = 0.0f;
 uint32_t lastBaroUs = 0;
+
+bool pitotOk = false;
+float pitotZeroPa = 0.0f;
+float diffPressPa = NAN;  // zero-corrected + low-pass filtered
+float iasMps = NAN;
+int pitotFailures = 0;
+uint32_t lastPitotUs = 0;
 
 // ------------------------------------------------------------ ESP-NOW link
 
@@ -223,6 +243,30 @@ void calibrateBaroReference() {
   }
 }
 
+// Averages ~1 s of readings at zero airflow to define the pressure zero.
+// The MS4525DO zero offset is tens of Pa and drifts with temperature, so it
+// is re-measured at every boot; the airplane must be stationary and the
+// pitot shielded from wind. The first few samples are discarded like in
+// calibrateBaroReference().
+void calibratePitotZero() {
+  constexpr int kDiscard = 5;
+  float sum = 0.0f;
+  int count = 0;
+  for (int i = 0; i < kPitotZeroSamples + kDiscard; i++) {
+    float pressure, temperature;
+    if (ms4525do::read(pressure, temperature) && i >= kDiscard) {
+      sum += pressure;
+      count++;
+    }
+    delay(20);
+  }
+  if (count > 0) {
+    pitotZeroPa = sum / count;
+  } else {
+    pitotOk = false;
+  }
+}
+
 // Reads the barometer at 25 Hz; altitude is relative to the boot reference,
 // climb rate is a low-pass-filtered derivative (raw would be +-1 m/s noise).
 void updateBaro(uint32_t now) {
@@ -243,6 +287,41 @@ void updateBaro(uint32_t now) {
     climbRate += alpha * (rate - climbRate);
   }
   altitudeM = alt;
+}
+
+// Reads the pitot at the 50 Hz sample rate. The differential pressure is
+// zero-corrected and low-pass filtered before the IAS conversion - the
+// sqrt blows raw sensor noise up at low speeds. Negative (filtered) dP
+// clamps to zero airspeed. A sensor that stops answering for
+// kPitotMaxConsecutiveFailures reads is declared dead: fields go NAN and
+// the TELEM_FLAG_PITOT_OK flag drops.
+void updatePitot(uint32_t now) {
+  if (!pitotOk) {
+    return;
+  }
+  float dt = (now - lastPitotUs) / 1000000.0f;
+  lastPitotUs = now;
+
+  float pressure, temperature;
+  if (!ms4525do::read(pressure, temperature)) {
+    if (++pitotFailures >= kPitotMaxConsecutiveFailures) {
+      pitotOk = false;
+      diffPressPa = NAN;
+      iasMps = NAN;
+      Serial.println("# MS4525DO stopped responding - airspeed is nan");
+    }
+    return;
+  }
+  pitotFailures = 0;
+
+  float dp = pressure - pitotZeroPa;
+  if (isnan(diffPressPa)) {
+    diffPressPa = dp;
+  } else {
+    float alpha = dt / (kAirspeedTimeConstant + dt);
+    diffPressPa += alpha * (dp - diffPressPa);
+  }
+  iasMps = sqrtf(2.0f * max(diffPressPa, 0.0f) / kAirDensity);
 }
 
 }  // namespace
@@ -279,10 +358,17 @@ void setup() {
     // '#' lines are ignored by the cocpitView parser
     Serial.println("# BMP280 not found - alt/climb will be nan");
   }
+  pitotOk = ms4525do::begin();
+  if (!pitotOk) {
+    Serial.println("# MS4525DO not found - airspeed will be nan");
+  }
 
   calibrateGyro();
   if (baroOk) {
     calibrateBaroReference();
+  }
+  if (pitotOk) {
+    calibratePitotZero();
   }
 
   // After the blocking calibrations (~2 s) the GPS module is certainly out
@@ -291,6 +377,7 @@ void setup() {
 
   lastSampleUs = micros();
   lastBaroUs = lastSampleUs;
+  lastPitotUs = lastSampleUs;
 }
 
 void loop() {
@@ -314,6 +401,7 @@ void loop() {
   lastSampleUs = now;
 
   updateBaro(now);
+  updatePitot(now);
 
   int16_t accelRaw[3];
   int16_t gyroRaw[3];
@@ -361,7 +449,8 @@ void loop() {
   t.msgId = MSG_TELEMETRY;
   t.version = PROTOCOL_VERSION;
   t.flags = (f.valid ? TELEM_FLAG_GPS_FIX : 0) | (failsafe ? TELEM_FLAG_FAILSAFE : 0) |
-            (mismatch ? TELEM_FLAG_VERSION_MISMATCH : 0) | (baroOk ? TELEM_FLAG_BARO_OK : 0);
+            (mismatch ? TELEM_FLAG_VERSION_MISMATCH : 0) | (baroOk ? TELEM_FLAG_BARO_OK : 0) |
+            (pitotOk ? TELEM_FLAG_PITOT_OK : 0);
   t.sats = f.sats;
   t.timeBootMs = nowMs;
   t.rollRad = roll;
@@ -372,6 +461,8 @@ void loop() {
   t.yawRate = gz;
   t.baroAltM = altitudeM;
   t.climbMps = climbRate;
+  t.diffPressPa = diffPressPa;
+  t.iasMps = iasMps;
   if (f.valid) {
     t.lat1e7 = (int32_t)llround(f.latDeg * 1e7);
     t.lon1e7 = (int32_t)llround(f.lonDeg * 1e7);
