@@ -15,6 +15,11 @@ constexpr float kCountsPerPsi = 0.8f * 16383.0f / (2.0f * kPressureRangePsi);
 // Resting counts further than this from the midpoint mean a bad clone or a
 // blocked port (doc/parts/pitot-ms4525do.md); ~1500 counts ~ 1580 Pa.
 constexpr int kSanityCountTolerance = 1500;
+// Output type A only ever produces 10-90 % of the count range; anything
+// outside is a bus artifact (an all-zero read decodes as status 0 and
+// would poison the filter with -8.6 kPa) or a broken sensor.
+constexpr uint16_t kMinValidCounts = 1638;   // 10 % of 16383
+constexpr uint16_t kMaxValidCounts = 14745;  // 90 % of 16383
 
 uint8_t deviceAddress = 0x28;
 
@@ -34,7 +39,7 @@ bool readRaw(uint16_t &pressureCounts, uint16_t &temperatureCounts) {
   }
   pressureCounts = ((b0 & 0x3F) << 8) | b1;
   temperatureCounts = (uint16_t)(((b2 << 8) | b3) >> 5);
-  return true;
+  return pressureCounts >= kMinValidCounts && pressureCounts <= kMaxValidCounts;
 }
 
 }  // namespace

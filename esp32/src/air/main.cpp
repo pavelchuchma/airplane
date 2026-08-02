@@ -29,6 +29,13 @@
  * USB serial (115200 baud) carries only '#'-prefixed boot/status
  * diagnostics — the CSV telemetry output is gone.
  *
+ * All I2C sensor access runs in a dedicated FreeRTOS task: the Arduino
+ * I2C stack can stall ~1 s per transaction when a device drops off the
+ * bus (Wire.setTimeOut does not bound that path — the driver keeps waiting
+ * while the HW FSM claims progress), and a stall like that must never
+ * touch the safety-critical 50 Hz link loop. loop() only consumes the
+ * latest published sensor snapshot.
+ *
  * The peer (ground board) MAC comes from -DPEER_MAC_STR, injected from
  * [env:ground] custom_board_mac by tools/peer_mac.py.
  *
@@ -62,20 +69,31 @@ namespace {
 constexpr uint8_t kMpuAddress = 0x68;
 constexpr uint8_t kRegPowerManagement1 = 0x6B;
 constexpr uint8_t kRegAccelStart = 0x3B;
+constexpr int kPinSda = 21;
+constexpr int kPinScl = 22;
 
 constexpr float kAccelScale = 1.0f / 16384.0f;        // LSB -> g, +-2g range
 constexpr float kGyroScale = (PI / 180.0f) / 131.0f;  // LSB -> rad/s, +-250 deg/s range
 constexpr float kComplementaryAlpha = 0.98f;          // gyro vs. accelerometer weight
 constexpr uint32_t kSampleIntervalUs = 20000;         // 50 Hz
 constexpr int kGyroCalibrationSamples = 200;
+constexpr int kImuMaxConsecutiveFailures = 25;  // ~0.5 s of failed reads = IMU out
+constexpr int kImuRecoveryStreak = 10;  // consecutive good samples to revive a dead IMU
 
 constexpr uint32_t kBaroIntervalUs = 40000;   // 25 Hz, just under the BMP280's ~26 Hz output
 constexpr int kBaroReferenceSamples = 25;     // 1 s average defining altitude zero
 constexpr float kVarioTimeConstant = 0.5f;    // [s] climb-rate low-pass
+constexpr uint32_t kBaroDeadAfterUs = 1000000;      // 1 s without a good read = baro dead
+constexpr uint32_t kBaroRecoveryIntervalMs = 2000;  // re-init cadence for a dead baro
 
 constexpr int kPitotZeroSamples = 50;             // 1 s average defining pressure zero
 constexpr float kAirspeedTimeConstant = 0.3f;     // [s] differential-pressure low-pass
-constexpr int kPitotMaxConsecutiveFailures = 25;  // ~0.5 s of failed reads = sensor dead
+constexpr uint32_t kPitotDeadAfterUs = 500000;    // 0.5 s without a good read = sensor dead
+constexpr uint32_t kPitotRecoveryIntervalMs = 2000;  // re-probe cadence for a dead sensor
+// A transaction against an absent/wedged device must fail fast: the Arduino
+// default lets it stall the loop for ~1 s, collapsing the 50 Hz telemetry
+// to ~0.5 Hz whenever a sensor drops off the bus.
+constexpr uint16_t kWireTimeoutMs = 20;
 constexpr float kAirDensity = 1.225f;  // [kg/m3] fixed sea-level rho - the result is IAS
 
 float gyroBiasX = 0.0f, gyroBiasY = 0.0f, gyroBiasZ = 0.0f;
@@ -83,17 +101,39 @@ float roll = 0.0f, pitch = 0.0f, yaw = 0.0f;
 uint32_t lastSampleUs = 0;
 
 bool baroOk = false;
+bool baroRefValid = false;  // boot reference exists - required for recovery
 float baroReferencePa = 0.0f;
 float altitudeM = NAN;
 float climbRate = 0.0f;
 uint32_t lastBaroUs = 0;
+uint32_t lastBaroGoodUs = 0;
+uint32_t lastBaroRecoveryMs = 0;
 
 bool pitotOk = false;
+bool pitotZeroValid = false;  // boot zero exists - required for recovery
 float pitotZeroPa = 0.0f;
 float diffPressPa = NAN;  // zero-corrected + low-pass filtered
 float iasMps = NAN;
-int pitotFailures = 0;
 uint32_t lastPitotUs = 0;
+uint32_t lastPitotGoodUs = 0;
+uint32_t lastPitotRecoveryMs = 0;
+
+// The sensor task publishes here, loop() copies under sensorMux. Defaults
+// are what telemetry reports until the first sample lands (the link is
+// already up during the ~2 s of boot calibration).
+struct SensorSnapshot {
+  float roll = 0.0f, pitch = 0.0f, yaw = 0.0f;
+  float rollRate = 0.0f, pitchRate = 0.0f, yawRate = 0.0f;
+  float baroAltM = NAN;
+  float climbMps = 0.0f;
+  float diffPressPa = NAN;
+  float iasMps = NAN;
+  bool baroOk = false;
+  bool pitotOk = false;
+  bool imuOk = false;  // clear = roll/pitch/yaw frozen at the last good sample
+};
+portMUX_TYPE sensorMux = portMUX_INITIALIZER_UNLOCKED;
+SensorSnapshot sensorShared;
 
 // ------------------------------------------------------------ ESP-NOW link
 
@@ -182,18 +222,57 @@ void updateLinkStats(uint32_t nowMs) {
   txFailPct = (ok + fail) ? (uint8_t)(fail * 100 / (ok + fail)) : 0;
 }
 
-void mpuWriteRegister(uint8_t reg, uint8_t value) {
+// An MCU reset in the middle of an I2C read leaves the addressed slave
+// holding SDA low forever (the sensors keep their power across ESP32
+// resets), which kills the whole bus - every device reads as "not found".
+// The standard cure before Wire.begin(): clock SCL until the slave
+// releases SDA, then issue a STOP.
+void clearI2cBus() {
+  pinMode(kPinSda, INPUT_PULLUP);
+  pinMode(kPinScl, INPUT_PULLUP);
+  delayMicroseconds(10);
+  if (digitalRead(kPinSda) == HIGH) {
+    return;  // bus is free
+  }
+  Serial.println("# I2C bus stuck (SDA low) - clocking it free");
+  pinMode(kPinScl, OUTPUT_OPEN_DRAIN);
+  digitalWrite(kPinScl, HIGH);
+  for (int i = 0; i < 9 && digitalRead(kPinSda) == LOW; i++) {
+    digitalWrite(kPinScl, LOW);
+    delayMicroseconds(5);
+    digitalWrite(kPinScl, HIGH);
+    delayMicroseconds(5);
+  }
+  // STOP condition: SDA low -> high while SCL is high.
+  pinMode(kPinSda, OUTPUT_OPEN_DRAIN);
+  digitalWrite(kPinSda, LOW);
+  delayMicroseconds(5);
+  digitalWrite(kPinSda, HIGH);
+  delayMicroseconds(5);
+  if (digitalRead(kPinSda) == LOW) {
+    Serial.println("# I2C bus clear failed - check wiring/power");
+  }
+}
+
+bool mpuWriteRegister(uint8_t reg, uint8_t value) {
   Wire.beginTransmission(kMpuAddress);
   Wire.write(reg);
   Wire.write(value);
-  Wire.endTransmission();
+  return Wire.endTransmission() == 0;
 }
 
-void mpuReadRaw(int16_t *accel, int16_t *gyro) {
+// False on I2C errors - without the check a dead bus reads as all 0xFF,
+// i.e. an accel vector (-1,-1,-1), and the complementary filter converges
+// to a bogus roll -135 / pitch +35 deg instead of freezing.
+bool mpuReadRaw(int16_t *accel, int16_t *gyro) {
   Wire.beginTransmission(kMpuAddress);
   Wire.write(kRegAccelStart);
-  Wire.endTransmission(false);
-  Wire.requestFrom(kMpuAddress, (uint8_t)14, (uint8_t) true);
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
+  if (Wire.requestFrom(kMpuAddress, (uint8_t)14, (uint8_t) true) != 14) {
+    return false;
+  }
 
   accel[0] = (Wire.read() << 8) | Wire.read();
   accel[1] = (Wire.read() << 8) | Wire.read();
@@ -203,6 +282,7 @@ void mpuReadRaw(int16_t *accel, int16_t *gyro) {
   gyro[0] = (Wire.read() << 8) | Wire.read();
   gyro[1] = (Wire.read() << 8) | Wire.read();
   gyro[2] = (Wire.read() << 8) | Wire.read();
+  return true;
 }
 
 // The ESP32 must be held still during this, otherwise the gyro bias will be wrong.
@@ -210,16 +290,23 @@ void calibrateGyro() {
   int16_t accel[3];
   int16_t gyro[3];
   long sumX = 0, sumY = 0, sumZ = 0;
+  int count = 0;
   for (int i = 0; i < kGyroCalibrationSamples; i++) {
-    mpuReadRaw(accel, gyro);
-    sumX += gyro[0];
-    sumY += gyro[1];
-    sumZ += gyro[2];
+    if (mpuReadRaw(accel, gyro)) {
+      sumX += gyro[0];
+      sumY += gyro[1];
+      sumZ += gyro[2];
+      count++;
+    }
     delay(3);
   }
-  gyroBiasX = (sumX / (float)kGyroCalibrationSamples) * kGyroScale;
-  gyroBiasY = (sumY / (float)kGyroCalibrationSamples) * kGyroScale;
-  gyroBiasZ = (sumZ / (float)kGyroCalibrationSamples) * kGyroScale;
+  if (count == 0) {
+    Serial.println("# MPU-6500 not responding - gyro bias not calibrated");
+    return;
+  }
+  gyroBiasX = (sumX / (float)count) * kGyroScale;
+  gyroBiasY = (sumY / (float)count) * kGyroScale;
+  gyroBiasZ = (sumZ / (float)count) * kGyroScale;
 }
 
 // Averages 1 s of pressure to define altitude zero at the boot location.
@@ -238,9 +325,32 @@ void calibrateBaroReference() {
   }
   if (count > 0) {
     baroReferencePa = sum / count;
+    baroRefValid = true;
   } else {
     baroOk = false;
   }
+}
+
+// Same shape as tryPitotRecovery below. A power-cycled BMP280 loses its
+// config registers (it ACKs but the data registers read as reset values),
+// so recovery re-runs the full begin(); the boot reference pressure is
+// kept - altitude stays relative to the boot location.
+void tryBaroRecovery() {
+  if (!baroRefValid) {
+    return;
+  }
+  uint32_t nowMs = millis();
+  if (nowMs - lastBaroRecoveryMs < kBaroRecoveryIntervalMs) {
+    return;
+  }
+  lastBaroRecoveryMs = nowMs;
+  if (!bmp280::begin()) {
+    return;
+  }
+  baroOk = true;
+  lastBaroUs = micros();
+  lastBaroGoodUs = lastBaroUs;
+  Serial.println("# BMP280 recovered");
 }
 
 // Averages ~1 s of readings at zero airflow to define the pressure zero.
@@ -262,26 +372,71 @@ void calibratePitotZero() {
   }
   if (count > 0) {
     pitotZeroPa = sum / count;
+    pitotZeroValid = true;
   } else {
     pitotOk = false;
   }
 }
 
+// A transient I2C dropout (vibration, loose wire) must not kill airspeed
+// for the rest of the flight: a dead sensor is re-probed every
+// kPitotRecoveryIntervalMs and on success resumes with the boot zero
+// offset (re-zeroing in flight is impossible - it needs still air).
+// A sensor with no boot zero stays dead: measuring against zero = 0 would
+// show a false airspeed of several m/s.
+void tryPitotRecovery(uint32_t now) {
+  if (!pitotZeroValid) {
+    return;
+  }
+  uint32_t nowMs = millis();
+  if (nowMs - lastPitotRecoveryMs < kPitotRecoveryIntervalMs) {
+    return;
+  }
+  lastPitotRecoveryMs = nowMs;
+  if (!ms4525do::begin()) {
+    return;
+  }
+  pitotOk = true;
+  lastPitotUs = now;
+  lastPitotGoodUs = now;
+  Serial.println("# MS4525DO recovered");
+}
+
 // Reads the barometer at 25 Hz; altitude is relative to the boot reference,
 // climb rate is a low-pass-filtered derivative (raw would be +-1 m/s noise).
+// 1 s without a plausible reading = baro dead: alt/climb go NAN and the
+// TELEM_FLAG_BARO_OK flag drops until tryBaroRecovery() brings it back.
 void updateBaro(uint32_t now) {
-  if (!baroOk || now - lastBaroUs < kBaroIntervalUs) {
+  if (!baroOk) {
+    tryBaroRecovery();
+    return;
+  }
+  if (now - lastBaroUs < kBaroIntervalUs) {
     return;
   }
   float dt = (now - lastBaroUs) / 1000000.0f;
   lastBaroUs = now;
 
   float pressure, temperature;
-  if (!bmp280::read(pressure, temperature)) {
+  // The plausibility band (300-1100 hPa) catches a power-cycled chip: it
+  // ACKs, but with the config lost the data registers hold reset values
+  // that would otherwise decode as a believable-looking constant altitude.
+  bool good = bmp280::read(pressure, temperature) && pressure > 30000.0f && pressure < 110000.0f;
+  if (!good) {
+    if (now - lastBaroGoodUs >= kBaroDeadAfterUs) {
+      baroOk = false;
+      altitudeM = NAN;
+      climbRate = NAN;
+      Serial.println("# BMP280 stopped responding - alt/climb nan until it recovers");
+    }
     return;
   }
+  lastBaroGoodUs = now;
+
   float alt = bmp280::altitudeFromPressure(pressure, baroReferencePa);
-  if (!isnan(altitudeM)) {
+  if (isnan(altitudeM)) {
+    climbRate = 0.0f;  // fresh start after boot/recovery - no derivative yet
+  } else {
     float rate = (alt - altitudeM) / dt;
     float alpha = dt / (kVarioTimeConstant + dt);
     climbRate += alpha * (rate - climbRate);
@@ -293,10 +448,12 @@ void updateBaro(uint32_t now) {
 // zero-corrected and low-pass filtered before the IAS conversion - the
 // sqrt blows raw sensor noise up at low speeds. Negative (filtered) dP
 // clamps to zero airspeed. A sensor that stops answering for
-// kPitotMaxConsecutiveFailures reads is declared dead: fields go NAN and
-// the TELEM_FLAG_PITOT_OK flag drops.
+// kPitotMaxConsecutiveFailures reads is declared dead - fields go NAN and
+// the TELEM_FLAG_PITOT_OK flag drops - until tryPitotRecovery() brings it
+// back.
 void updatePitot(uint32_t now) {
   if (!pitotOk) {
+    tryPitotRecovery(now);
     return;
   }
   float dt = (now - lastPitotUs) / 1000000.0f;
@@ -304,15 +461,17 @@ void updatePitot(uint32_t now) {
 
   float pressure, temperature;
   if (!ms4525do::read(pressure, temperature)) {
-    if (++pitotFailures >= kPitotMaxConsecutiveFailures) {
+    // Time-based, not attempt-based: failed transactions can be slow, and
+    // the sensor must read as dead (NAN) within a fixed real-time budget.
+    if (now - lastPitotGoodUs >= kPitotDeadAfterUs) {
       pitotOk = false;
       diffPressPa = NAN;
       iasMps = NAN;
-      Serial.println("# MS4525DO stopped responding - airspeed is nan");
+      Serial.println("# MS4525DO stopped responding - airspeed nan until it recovers");
     }
     return;
   }
-  pitotFailures = 0;
+  lastPitotGoodUs = now;
 
   float dp = pressure - pitotZeroPa;
   if (isnan(diffPressPa)) {
@@ -322,6 +481,128 @@ void updatePitot(uint32_t now) {
     diffPressPa += alpha * (dp - diffPressPa);
   }
   iasMps = sqrtf(2.0f * max(diffPressPa, 0.0f) / kAirDensity);
+}
+
+// Owns the I2C bus and every sensor on it - see the file header for why
+// this is a separate task. Bring-up, calibration and the 50 Hz sampling
+// all happen here; a stalled transaction only delays the next sample.
+void sensorTask(void *) {
+  clearI2cBus();
+  Wire.begin();
+  Wire.setClock(400000);
+  Wire.setTimeOut(kWireTimeoutMs);
+
+  mpuWriteRegister(kRegPowerManagement1, 0x00);  // wake up from sleep mode
+  delay(50);
+
+  baroOk = bmp280::begin();
+  if (!baroOk) {
+    // '#' lines are ignored by the cocpitView parser
+    Serial.println("# BMP280 not found - alt/climb will be nan");
+  }
+  pitotOk = ms4525do::begin();
+  if (!pitotOk) {
+    Serial.println("# MS4525DO not found - airspeed will be nan");
+  }
+
+  calibrateGyro();
+  if (baroOk) {
+    calibrateBaroReference();
+  }
+  if (pitotOk) {
+    calibratePitotZero();
+  }
+
+  uint32_t lastAttitudeUs = micros();
+  lastBaroUs = lastAttitudeUs;
+  lastBaroGoodUs = lastAttitudeUs;
+  lastPitotUs = lastAttitudeUs;
+  lastPitotGoodUs = lastAttitudeUs;
+  int imuFailures = 0;
+  int imuGoodStreak = 0;
+  TickType_t lastWake = xTaskGetTickCount();
+
+  for (;;) {
+    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(20));  // 50 Hz
+    uint32_t now = micros();
+    float dt = (now - lastAttitudeUs) / 1000000.0f;
+    lastAttitudeUs = now;
+
+    updateBaro(now);
+    updatePitot(now);
+
+    int16_t accelRaw[3];
+    int16_t gyroRaw[3];
+    float gx = 0.0f, gy = 0.0f, gz = 0.0f;  // body rates, zero while the IMU is out
+    float ax = 0.0f, ay = 0.0f, az = 0.0f;
+    bool imuSample = mpuReadRaw(accelRaw, gyroRaw);
+    if (imuSample) {
+      ax = accelRaw[0] * kAccelScale;
+      ay = accelRaw[1] * kAccelScale;
+      az = accelRaw[2] * kAccelScale;
+      // An MPU that lost power comes back in sleep mode: it ACKs but the
+      // data registers read all-zero. |a| this low is aerodynamically
+      // impossible, so treat it as a failed sample.
+      imuSample = sqrtf(ax * ax + ay * ay + az * az) >= 0.05f;
+    }
+    if (imuSample && imuFailures >= kImuMaxConsecutiveFailures) {
+      // Recovery hysteresis: garbage bytes off a floating bus occasionally
+      // pass the plausibility check and a single such "sample" must not
+      // revive the IMU (it used to blink the frozen horizon/compass back
+      // for 0.5 s). Only an unbroken streak of good samples counts; the
+      // streak samples themselves are discarded, the filter resumes after.
+      if (++imuGoodStreak >= kImuRecoveryStreak) {
+        imuFailures = 0;
+        imuGoodStreak = 0;
+        Serial.println("# MPU-6500 recovered");
+      }
+    } else if (imuSample) {
+      imuFailures = 0;
+      imuGoodStreak = 0;
+
+      gx = gyroRaw[0] * kGyroScale - gyroBiasX;
+      gy = gyroRaw[1] * kGyroScale - gyroBiasY;
+      gz = gyroRaw[2] * kGyroScale - gyroBiasZ;
+
+      float rollAccel = atan2f(ay, az);
+      float pitchAccel = atan2f(-ax, sqrtf(ay * ay + az * az));
+
+      roll = kComplementaryAlpha * (roll + gx * dt) + (1.0f - kComplementaryAlpha) * rollAccel;
+      pitch = kComplementaryAlpha * (pitch + gy * dt) + (1.0f - kComplementaryAlpha) * pitchAccel;
+      yaw += gz * dt;  // no magnetometer - gyro integration only, drifts over time
+    } else {
+      imuFailures++;
+      imuGoodStreak = 0;
+      if (imuFailures == kImuMaxConsecutiveFailures) {
+        // Attitude freezes at the last good sample - much better than the
+        // fake roll/pitch the filter would converge to on garbage reads.
+        // TELEM_FLAG_IMU_OK drops, so the HUD hides horizon and compass.
+        Serial.println("# MPU-6500 not responding - attitude frozen");
+      }
+      if (imuFailures % kImuMaxConsecutiveFailures == 0) {
+        // Periodic recovery: wake the MPU again in case it power-cycled
+        // back into sleep mode (it comes back asleep, ACKing but reading
+        // all-zero).
+        mpuWriteRegister(kRegPowerManagement1, 0x00);
+      }
+    }
+
+    portENTER_CRITICAL(&sensorMux);
+    sensorShared.roll = roll;
+    sensorShared.pitch = pitch;
+    sensorShared.yaw = yaw;
+    sensorShared.rollRate = gx;
+    sensorShared.pitchRate = gy;
+    sensorShared.yawRate = gz;
+    sensorShared.baroAltM = altitudeM;
+    sensorShared.climbMps = climbRate;
+    sensorShared.diffPressPa = diffPressPa;
+    sensorShared.iasMps = iasMps;
+    sensorShared.baroOk = baroOk;
+    sensorShared.pitotOk = pitotOk;
+    sensorShared.imuOk = imuFailures < kImuMaxConsecutiveFailures;
+    portEXIT_CRITICAL(&sensorMux);
+  }
 }
 
 }  // namespace
@@ -347,48 +628,33 @@ void setup() {
   }
   statsWindowStartMs = millis();
 
-  Wire.begin();
-  Wire.setClock(400000);
-
-  mpuWriteRegister(kRegPowerManagement1, 0x00);  // wake up from sleep mode
-  delay(50);
-
-  baroOk = bmp280::begin();
-  if (!baroOk) {
-    // '#' lines are ignored by the cocpitView parser
-    Serial.println("# BMP280 not found - alt/climb will be nan");
-  }
-  pitotOk = ms4525do::begin();
-  if (!pitotOk) {
-    Serial.println("# MS4525DO not found - airspeed will be nan");
-  }
-
-  calibrateGyro();
-  if (baroOk) {
-    calibrateBaroReference();
-  }
-  if (pitotOk) {
-    calibratePitotZero();
-  }
-
-  // After the blocking calibrations (~2 s) the GPS module is certainly out
-  // of reset, so the fire-and-forget config frames in begin() are not lost.
-  gps::begin();
+  // Core 0 with the WiFi stack; loop() keeps core 1. Priority 1 = same as
+  // loop, it is blocked (not busy) while a transaction stalls.
+  xTaskCreatePinnedToCore(sensorTask, "sensors", 6144, nullptr, 1, nullptr, 0);
 
   lastSampleUs = micros();
-  lastBaroUs = lastSampleUs;
-  lastPitotUs = lastSampleUs;
 }
 
 void loop() {
-  // Drained every pass (the rate gate below early-returns, so this runs far
-  // above the 38400 baud byte rate - no UART overflow between samples).
-  gps::poll();
+  // The GPS config frames are fire-and-forget, so they are sent once the
+  // module is certainly out of reset (~2.5 s after power-on; the sensor
+  // task no longer blocks setup() to provide that delay for free).
+  static bool gpsStarted = false;
+  if (!gpsStarted && millis() > 2500) {
+    gpsStarted = true;
+    gps::begin();
+  }
+  if (gpsStarted) {
+    // Drained every pass (the rate gate below early-returns, so this runs
+    // far above the 38400 baud byte rate - no UART overflow between samples).
+    gps::poll();
+  }
 
   uint32_t now = micros();
   if (now - lastSampleUs < kSampleIntervalUs) {
     return;
   }
+  lastSampleUs = now;
 
   static bool gpsChecked = false;
   if (!gpsChecked && now > 5000000) {
@@ -397,29 +663,6 @@ void loop() {
       Serial.println("# GPS not responding on UART2 - GPS fields will be nan");
     }
   }
-  float dt = (now - lastSampleUs) / 1000000.0f;
-  lastSampleUs = now;
-
-  updateBaro(now);
-  updatePitot(now);
-
-  int16_t accelRaw[3];
-  int16_t gyroRaw[3];
-  mpuReadRaw(accelRaw, gyroRaw);
-
-  float ax = accelRaw[0] * kAccelScale;
-  float ay = accelRaw[1] * kAccelScale;
-  float az = accelRaw[2] * kAccelScale;
-  float gx = gyroRaw[0] * kGyroScale - gyroBiasX;
-  float gy = gyroRaw[1] * kGyroScale - gyroBiasY;
-  float gz = gyroRaw[2] * kGyroScale - gyroBiasZ;
-
-  float rollAccel = atan2f(ay, az);
-  float pitchAccel = atan2f(-ax, sqrtf(ay * ay + az * az));
-
-  roll = kComplementaryAlpha * (roll + gx * dt) + (1.0f - kComplementaryAlpha) * rollAccel;
-  pitch = kComplementaryAlpha * (pitch + gy * dt) + (1.0f - kComplementaryAlpha) * pitchAccel;
-  yaw += gz * dt;  // no magnetometer - gyro integration only, drifts over time
 
   if (!linkOk) {
     return;
@@ -443,26 +686,31 @@ void loop() {
                             : "# FAILSAFE cleared");
   }
 
+  SensorSnapshot s;
+  portENTER_CRITICAL(&sensorMux);
+  s = sensorShared;
+  portEXIT_CRITICAL(&sensorMux);
+
   gps::Fix f = gps::fix();
 
   TelemetryMessage t = {};
   t.msgId = MSG_TELEMETRY;
   t.version = PROTOCOL_VERSION;
   t.flags = (f.valid ? TELEM_FLAG_GPS_FIX : 0) | (failsafe ? TELEM_FLAG_FAILSAFE : 0) |
-            (mismatch ? TELEM_FLAG_VERSION_MISMATCH : 0) | (baroOk ? TELEM_FLAG_BARO_OK : 0) |
-            (pitotOk ? TELEM_FLAG_PITOT_OK : 0);
+            (mismatch ? TELEM_FLAG_VERSION_MISMATCH : 0) | (s.baroOk ? TELEM_FLAG_BARO_OK : 0) |
+            (s.pitotOk ? TELEM_FLAG_PITOT_OK : 0) | (s.imuOk ? TELEM_FLAG_IMU_OK : 0);
   t.sats = f.sats;
   t.timeBootMs = nowMs;
-  t.rollRad = roll;
-  t.pitchRad = pitch;
-  t.yawRad = yaw;
-  t.rollRate = gx;
-  t.pitchRate = gy;
-  t.yawRate = gz;
-  t.baroAltM = altitudeM;
-  t.climbMps = climbRate;
-  t.diffPressPa = diffPressPa;
-  t.iasMps = iasMps;
+  t.rollRad = s.roll;
+  t.pitchRad = s.pitch;
+  t.yawRad = s.yaw;
+  t.rollRate = s.rollRate;
+  t.pitchRate = s.pitchRate;
+  t.yawRate = s.yawRate;
+  t.baroAltM = s.baroAltM;
+  t.climbMps = s.climbMps;
+  t.diffPressPa = s.diffPressPa;
+  t.iasMps = s.iasMps;
   if (f.valid) {
     t.lat1e7 = (int32_t)llround(f.latDeg * 1e7);
     t.lon1e7 = (int32_t)llround(f.lonDeg * 1e7);

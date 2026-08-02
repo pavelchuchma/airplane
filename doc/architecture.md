@@ -72,7 +72,25 @@ offset is re-measured at every boot (the offset is tens of Pa and drifts
 with temperature — the airplane must be stationary), the differential
 pressure is low-pass filtered and converted to indicated airspeed at fixed
 sea-level density; both travel in telemetry and cocpitView feeds the IAS to
-`VFR_HUD.airspeed`, which drives the HUD's airspeed tape.
+`VFR_HUD.airspeed`, which drives the HUD's airspeed tape. A sensor that
+stops answering (~0.5 s of failed reads — think a vibrating connector) goes
+NAN on the wire, shows as `---` on the HUD instead of a false 0, and is
+re-probed every 2 s, resuming with the boot zero offset (in-flight
+re-zeroing is impossible, it needs still air). The other I2C consumers
+survive a dead bus too: boot clocks a stuck slave free before `Wire.begin()`
+(an MCU reset mid-transaction otherwise leaves SDA held low across reboots,
+taking down every device on the bus) and IMU read errors freeze the attitude
+instead of feeding all-0xFF garbage into the complementary filter — the
+frozen state is flagged (`TELEM_FLAG_IMU_OK` clear), cocpitView stops
+publishing ATTITUDE and the HUD hides the horizon and yaw compass rather
+than display stuck values.
+Crucially, all I2C access runs in a dedicated FreeRTOS task (core 0), not in
+the link loop: the Arduino/IDF I2C driver can stall ~1 s per transaction on
+a disturbed bus no matter what `Wire.setTimeOut` says (measured 1006 ms with
+a 20 ms timeout), and with sensors read inline that collapsed the 50 Hz loop
+— telemetry, failsafe timing and all — to ~0.5 Hz. The loop only copies the
+task's latest snapshot under a spinlock, so a bus pathology can only ever
+delay sensor data, never the link.
 
 The ESP-NOW link is implemented: the air firmware sends one `TelemetryMessage`
 per sample (50 Hz) and receives `CommandMessage`s (lib/protocol/messages.h),

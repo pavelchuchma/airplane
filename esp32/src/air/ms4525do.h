@@ -20,8 +20,9 @@ bool begin(uint8_t address = 0x28);
 
 // Reads the latest conversion. Differential pressure in Pa (raw, NOT
 // zero-offset corrected - the caller subtracts its boot-time zero),
-// temperature in degrees C. Returns false on I2C errors, stale data or a
-// sensor fault.
+// temperature in degrees C. Returns false on I2C errors, stale data, a
+// sensor fault, or counts outside the sensor's legal 10-90 % output band
+// (bus artifacts decode as status 0 with counts 0).
 bool read(float &diffPressPa, float &temperatureC);
 
 }  // namespace ms4525do

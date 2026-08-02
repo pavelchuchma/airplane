@@ -13,7 +13,7 @@ Frame layout on the ground bridge's serial link:
 import collections
 import struct
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 MSG_TELEMETRY = 0x01
 MSG_COMMAND = 0x02
@@ -24,6 +24,7 @@ TELEM_FLAG_FAILSAFE = 1 << 1
 TELEM_FLAG_VERSION_MISMATCH = 1 << 2
 TELEM_FLAG_BARO_OK = 1 << 3
 TELEM_FLAG_PITOT_OK = 1 << 4
+TELEM_FLAG_IMU_OK = 1 << 5  # clear = attitude fields are frozen/stale
 
 COMMAND_CHANNELS = 8
 NEUTRAL_CHANNELS = (0,) * COMMAND_CHANNELS  # surfaces neutral, throttle idle

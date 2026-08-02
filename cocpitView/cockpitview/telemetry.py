@@ -95,15 +95,17 @@ class TelemetrySnapshot:
 
     @property
     def airspeed_kmh(self):
-        """Airspeed in km/h, or None when unknown."""
-        if not self._fresh(self.vfr_ts):
+        """Airspeed in km/h, or None when unknown (stale, or the air side
+        reports no/dead pitot as NaN)."""
+        if not self._fresh(self.vfr_ts) or math.isnan(self.airspeed_mps):
             return None
         return self.airspeed_mps * 3.6
 
     @property
     def vario_mps(self):
-        """Climb rate in m/s from VFR_HUD (positive = climbing), or None."""
-        if not self._fresh(self.vfr_ts):
+        """Climb rate in m/s from VFR_HUD (positive = climbing), or None
+        when stale or the baro is dead (NaN on the wire)."""
+        if not self._fresh(self.vfr_ts) or math.isnan(self.climb_mps):
             return None
         return self.climb_mps
 
@@ -114,19 +116,23 @@ class TelemetrySnapshot:
             return self.alt_relative_m
         if self._fresh(self.gpi_ts):
             return self.gpi_rel_alt_m
-        if self._fresh(self.vfr_ts):
+        if self._fresh(self.vfr_ts) and not math.isnan(self.vfr_alt_m):
             return self.vfr_alt_m
         return None
 
     @property
     def heading_deg(self):
-        """Magnetic heading in degrees 0-360, falls back to yaw, or None."""
-        if self._fresh(self.vfr_ts):
-            return self.vfr_heading_deg % 360.0
-        if self._fresh(self.gpi_ts):
-            return self.gpi_heading_deg % 360.0
+        """Heading in degrees 0-360, or None. Yaw-derived sources (VFR_HUD
+        heading is the integrated yaw too) only count while ATTITUDE is
+        live - a dead IMU freezes yaw, and espnow_source stops publishing
+        ATTITUDE to signal that. Fallback is the GPS course from
+        GLOBAL_POSITION_INT (NaN unless actually moving)."""
         if self._fresh(self.attitude_ts):
+            if self._fresh(self.vfr_ts):
+                return self.vfr_heading_deg % 360.0
             return math.degrees(self.yaw) % 360.0
+        if self._fresh(self.gpi_ts) and not math.isnan(self.gpi_heading_deg):
+            return self.gpi_heading_deg % 360.0
         return None
 
     @property
@@ -208,7 +214,8 @@ def apply_message(s, msg, now):
         s.vn = msg.vx / 100.0
         s.ve = msg.vy / 100.0
         s.vd = msg.vz / 100.0
-        s.gpi_heading_deg = msg.hdg / 100.0
+        # UINT16_MAX = unknown (sent while not moving - COG is meaningless)
+        s.gpi_heading_deg = float("nan") if msg.hdg == 65535 else msg.hdg / 100.0
         s.gpi_rel_alt_m = msg.relative_alt / 1000.0
         s.gpi_alt_amsl_m = msg.alt / 1000.0
         s.lat_deg = msg.lat / 1e7

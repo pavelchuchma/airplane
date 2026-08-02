@@ -199,39 +199,45 @@ class EspNowSource:
                 )
             )
 
+        # No ATTITUDE while the air side reports a dead IMU (the wire fields
+        # are frozen at the last good sample): attitude_ts goes stale within
+        # a second and the HUD hides the horizon, roll indicator and the
+        # yaw-derived compass instead of showing stuck values.
+        if t.flags & protocol.TELEM_FLAG_IMU_OK:
+            self._hub.publish(
+                self._hub.mav.attitude_encode(
+                    time_boot_ms, t.roll, t.pitch, t.yaw, t.rollspeed, t.pitchspeed, t.yawspeed
+                )
+            )
+
+        # VFR_HUD + ALTITUDE go out unconditionally: each float carries NaN
+        # while its sensor is dead (pitot -> airspeed, baro -> alt/climb)
+        # and the HUD hides just the affected readout - a dead baro must
+        # not take a working airspeed down with it. No throttle sensor yet;
+        # heading is the (drifting) integrated yaw. VFR_HUD.alt nominally
+        # is AMSL but we only have the baro-relative altitude - the HUD
+        # prefers ALTITUDE.altitude_relative anyway.
         self._hub.publish(
-            self._hub.mav.attitude_encode(
-                time_boot_ms, t.roll, t.pitch, t.yaw, t.rollspeed, t.pitchspeed, t.yawspeed
+            self._hub.mav.vfr_hud_encode(
+                t.ias_mps,
+                0.0 if math.isnan(t.gs_mps) else t.gs_mps,
+                int(math.degrees(t.yaw)) % 360,
+                0,
+                t.baro_alt_m,
+                t.climb_mps,
             )
         )
-
-        if not math.isnan(t.baro_alt_m):
-            # Airspeed is the pitot IAS (NaN = no/dead sensor -> 0, same as
-            # before the sensor existed); no throttle sensor yet; heading is
-            # the (drifting) integrated yaw. VFR_HUD.alt nominally is AMSL
-            # but we only have the baro-relative altitude - the HUD prefers
-            # ALTITUDE.altitude_relative anyway.
-            self._hub.publish(
-                self._hub.mav.vfr_hud_encode(
-                    0.0 if math.isnan(t.ias_mps) else t.ias_mps,
-                    0.0 if math.isnan(t.gs_mps) else t.gs_mps,
-                    int(math.degrees(t.yaw)) % 360,
-                    0,
-                    t.baro_alt_m,
-                    t.climb_mps,
-                )
+        self._hub.publish(
+            self._hub.mav.altitude_encode(
+                time_usec,
+                float("nan"),  # altitude_monotonic
+                float("nan"),  # altitude_amsl - unknown (no QNH)
+                t.baro_alt_m,  # altitude_local (relative to boot location)
+                t.baro_alt_m,  # altitude_relative
+                float("nan"),  # altitude_terrain
+                float("nan"),  # bottom_clearance
             )
-            self._hub.publish(
-                self._hub.mav.altitude_encode(
-                    time_usec,
-                    float("nan"),  # altitude_monotonic
-                    float("nan"),  # altitude_amsl - unknown (no QNH)
-                    t.baro_alt_m,  # altitude_local (relative to boot location)
-                    t.baro_alt_m,  # altitude_relative
-                    float("nan"),  # altitude_terrain
-                    float("nan"),  # bottom_clearance
-                )
-            )
+        )
 
         self._publish_gps(t, fix, time_usec, time_boot_ms)
 

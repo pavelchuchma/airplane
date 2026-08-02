@@ -6,7 +6,7 @@
 
 #include <stdint.h>
 
-constexpr uint8_t PROTOCOL_VERSION = 2;
+constexpr uint8_t PROTOCOL_VERSION = 3;
 
 // Both radios must sit on the same channel; set explicitly at bring-up.
 constexpr uint8_t WIFI_CHANNEL = 1;
@@ -20,6 +20,7 @@ constexpr uint8_t TELEM_FLAG_FAILSAFE = 1 << 1;          // no valid command for
 constexpr uint8_t TELEM_FLAG_VERSION_MISMATCH = 1 << 2;  // last command had wrong version
 constexpr uint8_t TELEM_FLAG_BARO_OK = 1 << 3;
 constexpr uint8_t TELEM_FLAG_PITOT_OK = 1 << 4;
+constexpr uint8_t TELEM_FLAG_IMU_OK = 1 << 5;  // clear = attitude fields are frozen/stale
 
 // Air -> PC, 50 Hz. GPS fields repeat between the 5 Hz GPS updates; floats
 // keep the NAN-as-invalid convention of gps::Fix (survives struct.unpack).
@@ -32,7 +33,7 @@ struct __attribute__((packed)) TelemetryMessage {
   float rollRad, pitchRad, yawRad;     // attitude [rad]
   float rollRate, pitchRate, yawRate;  // body rates [rad/s]
   float baroAltM;                      // m relative to boot location, NAN = no baro
-  float climbMps;                      // low-pass-filtered vario [m/s]
+  float climbMps;                      // low-pass-filtered vario [m/s], NAN = no baro
   float diffPressPa;                   // pitot dP, zeroed at boot + filtered, NAN = no pitot
   float iasMps;                        // indicated airspeed [m/s], NAN = no pitot
   int32_t lat1e7, lon1e7;              // deg * 1e7, valid iff TELEM_FLAG_GPS_FIX
