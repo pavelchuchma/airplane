@@ -85,6 +85,51 @@ follow-ups: joystick input, servos + a real failsafe action (today the flag
 and a `#` diagnostic are the whole action), and the GPS course-over-ground
 yaw correction (above a groundspeed threshold).
 
+## Power architecture (airplane, planned)
+
+Source: **3S Li-ion pack** (9.0–12.6 V). All rails share a common ground,
+wired star-style from the converter outputs.
+
+```
+3S Li-ion (9.0–12.6 V)
+ ├─ buck → 7.5–8 V ── LC filter ──► FPV camera + VTX      (Mini-360 / MP1584)
+ ├─ buck → 5 V ► servos (PCA9685 V+)                      (5 A BEC, or own Mini-360)
+ └─ buck → 5 V ► logic:                                   (Mini-360)
+      ├─ ESP32 devkit VIN (on-board AMS1117 feeds the ESP32 only)
+      ├─ MS4525DO (5 V part; RC filter 10–22 Ω + 100 µF)
+      └─ LDO 3.3 V (HT7833/ME6211) ► GY-91, GPS
+```
+
+Reasoning behind the choices:
+
+- **No 2S tap for the camera/VTX.** Tapping two cells would cut the VTX's
+  linear-regulator heat (~1 W at 12 V), but it unbalances the pack and, worse,
+  2S Li-ion sags to 6.0–6.6 V near empty — below the VTX's 7 V minimum, so
+  video would die mid-flight. A small buck to ~7.5 V from the full pack gives
+  the same heat relief without either problem. The buck's switching noise
+  shows up as lines in analog video, hence the LC filter (~10–22 µH +
+  220–470 µF low-ESR) on its output.
+- **Sensors do not hang on the devkit's 3.3 V pin.** The devkit's AMS1117 is
+  marginal (clone quality, ~1.1 V dropout) and the ESP32's 50 Hz ESP-NOW LR
+  bursts pull 300–500 mA spikes through it; a separate low-dropout LDO
+  (HT7833, ~0.3 V dropout) keeps the sensor rail clean — it rides through 5 V
+  rail dips and keeps radio spikes out of the baro/vario data.
+- **Servos on their own 5 V converter, separate from logic.** Servo current
+  comes in ugly start/stall pulses that sag and pollute the rail; the ESP32
+  is the failsafe brain and a brownout in flight equals link loss. A shared
+  5 A rail does work (bulk 470–1000 µF at the converter, star wiring, thick
+  servo leads), but a second converter costs almost nothing and decouples the
+  ESP32 from servo transients completely — only GND is shared.
+- **Mini-360 (MP1584) modules** are fine for the video and logic rails
+  (real-world continuous limit ~1–1.5 A despite the "3 A" rating). Set the
+  trimmer under no load, verify with a meter before connecting anything, and
+  lock it with a drop of varnish — vibration can turn it. The servo rail
+  needs a real 3–5 A BEC once servos arrive.
+- The MS4525DO in the kit is the **DS5 (5 V) variant** — running it at 3.3 V
+  is within absolute maximums but outside calibration spec (scale error);
+  it stays on the 5 V rail with I2C pulled up to 3.3 V (open-drain, so safe
+  for the ESP32 — same arrangement as Pixhawk).
+
 ## Design decisions
 
 - **One PlatformIO project, two environments.** The wire protocol must change
