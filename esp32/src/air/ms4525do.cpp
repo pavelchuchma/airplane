@@ -65,7 +65,11 @@ bool read(float &diffPressPa, float &temperatureC) {
   if (!readRaw(pressureCounts, temperatureCounts)) {
     return false;
   }
-  diffPressPa = ((int)pressureCounts - kZeroCounts) * (kPsiToPa / kCountsPerPsi);
+  // Negated: airflow into the dynamic port drives counts BELOW the midpoint
+  // on this breakout (same convention as the ArduPilot/PX4 MS4525 drivers),
+  // so positive dP = positive airspeed. Un-negated, every real airflow went
+  // negative and the IAS clamp pinned the HUD to 0.
+  diffPressPa = (kZeroCounts - (int)pressureCounts) * (kPsiToPa / kCountsPerPsi);
   temperatureC = temperatureCounts * (200.0f / 2047.0f) - 50.0f;
   return true;
 }
