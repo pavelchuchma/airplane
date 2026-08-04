@@ -20,7 +20,9 @@ The dP sign convention is inverted relative to the ArduPilot/PX4 MS4525DO driver
 
 **Failure scenario:** With the kit plumbed exactly per `doc/parts/pitot-ms4525do.md` (dynamic to Port 1, static to Port 2), airflow makes counts drop below 8192, `dp = pressure − pitotZeroPa` goes negative, the `max(dp,0)` clamp in `updatePitot` (`main.cpp:483`) forces IAS to 0: the HUD airspeed tape reads 0 at any speed and `TELEM_FLAG_PITOT_OK` stays set, so the sensor looks "healthy but not working" — matching the reported symptom while MPU/BMP280 on the same bus work fine.
 
-## 2. `[ ]` ESP-NOW rx callbacks never verify the sender MAC — CONFIRMED (correctness, safety)
+## 2. `[x]` ESP-NOW rx callbacks never verify the sender MAC — CONFIRMED (correctness, safety)
+
+> **Fixed 2026-08-04:** both rx callbacks (air `onCommandReceived`, ground `onEspNowReceive`) drop frames whose sender MAC is not the configured peer.
 
 `esp32/src/air/main.cpp:163` (same root cause at `esp32/src/ground/main.cpp:40`)
 

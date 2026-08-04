@@ -223,6 +223,14 @@ uint8_t txFailPct = 0;
 uint32_t statsWindowStartMs = 0;
 
 void onCommandReceived(const uint8_t *mac, const uint8_t *data, int len) {
+  // ESP-NOW hands frames from ANY sender to this callback - the PMK/LMK
+  // encryption only covers traffic with the registered peer. Without this
+  // check a stray transmitter on the channel could keep refreshing
+  // lastCmdMs (suppressing the failsafe) and, once servos exist, fly the
+  // airplane.
+  if (memcmp(mac, peerMac, 6) != 0) {
+    return;
+  }
   if (len != (int)sizeof(CommandMessage) || data[0] != MSG_COMMAND) {
     return;
   }
