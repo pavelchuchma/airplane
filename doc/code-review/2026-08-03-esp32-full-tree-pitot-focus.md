@@ -88,7 +88,9 @@ If `calibratePitotZero()` gets zero good reads in its 1.1 s window (transient bu
 
 **Failure scenario:** A sensor that ACKs reads at 0x28 but NACKs the address+W probe makes `Wire.endTransmission()` return non-zero, `begin()` returns false at boot and at every `tryPitotRecovery()` attempt, and airspeed is permanently `---` with "# MS4525DO not found" despite the device answering an I2C read scan; probing directly with `Wire.requestFrom` (as `readRaw` already does) would detect it.
 
-## 9. `[ ]` 400 kHz bus runs at the MS4525DO's spec maximum — PLAUSIBLE (correctness, hardware)
+## 9. `[x]` 400 kHz bus runs at the MS4525DO's spec maximum — PLAUSIBLE (correctness, hardware)
+
+> **Fixed 2026-08-04:** bus dropped to 100 kHz (`kI2cClockHz`) — 4× timing margin, bandwidth still ~7× the need.
 
 `esp32/src/air/main.cpp:492`
 
@@ -97,6 +99,8 @@ If `calibratePitotZero()` gets zero good reads in its 1.1 s window (transient bu
 **Failure scenario:** Bus rise time degraded by the pitot cable's capacitance makes 400 kHz marginal specifically for the MS4525DO (the MPU-6500 and BMP280 sit directly on the well-pulled-up GY-91 board and tolerate it): the sensor NACKs or returns corrupted transfers, `begin()` fails or reads fail continuously, and airspeed reads `---` in practice while the other two sensors work — dropping to 100 kHz (still 2× the needed 50 Hz × 4-byte throughput) is the standard fix.
 
 ## 10. `[ ]` 5 V-powered pitot may not see 3.3 V bus highs as high — PLAUSIBLE (correctness, hardware)
+
+> **Partially addressed 2026-08-04:** the 400 kHz half is gone (bus now 100 kHz). The VIH margin itself is a wiring item — powering the sensor from 3.3 V (in spec, 2.7–5.5 V) remains open for the bench.
 
 `esp32/src/air/main.cpp:46` (wiring comment)
 

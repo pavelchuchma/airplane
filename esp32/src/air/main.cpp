@@ -92,7 +92,11 @@ constexpr int kRecoveryStreak = 10;          // consecutive good reads reviving 
 constexpr uint32_t kProbeIntervalMs = 2000;  // dead-sensor probe cadence (failed probes are slow)
 constexpr uint32_t kBusRescueAfterUs = 2000000;  // nothing good on the bus this long -> rescue
 constexpr uint32_t kBusRescueIntervalMs = 5000;  // bus-rescue attempt cadence
-constexpr uint32_t kI2cClockHz = 400000;
+// 100 kHz, not 400: 400 kHz is the MS4525DO's spec maximum, and that one
+// device hangs on a wire harness off the well-pulled-up GY-91 board (5 V
+// part judging a 3.3 V bus, ~10 k pull-ups). Bus traffic is ~30 B per
+// 20 ms tick, so a quarter of the bandwidth is still plenty.
+constexpr uint32_t kI2cClockHz = 100000;
 constexpr uint32_t kSnapshotStaleUs = 200000;  // loop() distrusts a snapshot older than this
 // Shortens SOME failure paths but does NOT bound the worst ones: the driver
 // can still stall ~1 s per transaction on a disturbed bus (measured 1006 ms
