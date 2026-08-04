@@ -95,7 +95,20 @@ decisions. Keep it updated when the design evolves.
   cocpitView puts IAS into `VFR_HUD.airspeed` — NaN passes through so the
   HUD tape shows `---`, never a lying 0. A revived sensor resumes with the
   boot zero (in-flight re-zeroing needs still air). Sensor temperature is
-  decoded but not sent (future TAS correction).
+  decoded but not sent (future TAS correction). Two things were established
+  by measurement and are easy to get wrong again: the **hoses are crossed
+  with respect to the port labels** on this kit (total pressure goes to the
+  port the labels suggest is the static one; a reversed pair reads a
+  rock-solid 0, not a negative value, because of the clamp — fix it in the
+  tubing, never by negating in the driver), and the **±1 psi range is
+  verified** against a 981 Pa water column, so `kPressureRangePsi` is not to
+  be touched. What is *not* solved is **position error**: on a bicycle the
+  IAS read ~30 % below GPS, entirely from where the static holes sat. That
+  correction belongs to the installation, must be measured on the airframe
+  (two reciprocal legs against GPS), and goes in its own constant.
+  `doc/parts/pitot-ms4525do.md` has the mounting analysis (the sweet spot is
+  c/4 ahead of the wing leading edge, where upwash cancels the C_L
+  dependence — further forward is worse) and the calibration procedure.
 - GPS (Quescan G10A-F30, u-blox M10) is on UART2 (GPIO16/17, 38400 baud),
   read via TinyGPSPlus (`src/air/gps.cpp`). The chip is flash-less, so the
   firmware re-applies config at every boot via raw UBX-CFG-VALSET frames:
@@ -129,4 +142,6 @@ decisions. Keep it updated when the design evolves.
   in GPS_RAW_INT.
 - Next steps: joystick input in cocpitView (the command channels are already
   on the wire, neutral for now); servos + a real failsafe action on the air
-  side; course-over-ground yaw correction above a groundspeed threshold.
+  side; course-over-ground yaw correction above a groundspeed threshold;
+  mount the pitot on the wing and calibrate its position error in flight
+  (check the static holes are not blocked first).

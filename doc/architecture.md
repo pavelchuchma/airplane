@@ -73,6 +73,15 @@ with temperature — the airplane must be stationary), the differential
 pressure is low-pass filtered and converted to indicated airspeed at fixed
 sea-level density; both travel in telemetry and cocpitView feeds the IAS to
 `VFR_HUD.airspeed`, which drives the HUD's airspeed tape.
+The sensor's scale factor is verified (a 981 Pa water column reads back as the
+expected 40.0 m/s), but the IAS carries **no position-error correction yet** —
+a first bench test on a bicycle read ~30 % low purely from where the static
+holes sat in the rider's pressure field. That correction is a property of the
+installation, not of the sensor, so it can only be measured on the airframe
+(two reciprocal legs against GPS) and it will live in its own constant, kept
+apart from the sensor's pressure range. Until then treat the airspeed tape as
+qualitative. See `doc/parts/pitot-ms4525do.md` for the mounting analysis and
+the calibration procedure.
 
 All three I2C sensors share one failure model and one recovery mechanism
 (`SensorLifecycle` in the air main.cpp). The only failure designed for is a

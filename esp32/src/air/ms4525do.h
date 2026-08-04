@@ -3,7 +3,10 @@
  * (pitot airspeed, address 0x28). Register-less: the sensor converts
  * continuously and a plain 4-byte read returns the latest sample plus
  * status bits. Our part is the DS5AI001DP variant: +-1 psi, output type A
- * (10-90 % of 2^14 counts). See doc/parts/pitot-ms4525do.md.
+ * (10-90 % of 2^14 counts) - the range is not guesswork from the seller's
+ * listing, it was measured against a 981 Pa water column (a +-2 psi die, the
+ * usual clone surprise, would read low by exactly sqrt(2) in speed).
+ * See doc/parts/pitot-ms4525do.md.
  *
  * There is no begin(): the sensor has no chip-id or config registers, so
  * presence is simply read() succeeding — main.cpp proves it with the boot

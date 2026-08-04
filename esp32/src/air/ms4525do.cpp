@@ -46,11 +46,14 @@ bool read(float &diffPressPa, float &temperatureC) {
   if (!readRaw(pressureCounts, temperatureCounts)) {
     return false;
   }
-  // Negated: airflow into the dynamic port drives counts BELOW the midpoint
-  // on this breakout (same convention as the ArduPilot/PX4 MS4525 drivers),
-  // so positive dP = positive airspeed. Un-negated, every real airflow went
-  // negative and the IAS clamp pinned the HUD to 0.
-  diffPressPa = (kZeroCounts - (int)pressureCounts) * (kPsiToPa / kCountsPerPsi);
+  // Datasheet sign convention, deliberately NOT negated: counts rise above the
+  // midpoint when the port fed with total pressure is the higher one. On our kit
+  // that port is not the one the labels suggest, so the hoses are crossed with
+  // respect to the silkscreen - the fix for a reversed pair belongs in the
+  // tubing, not here (doc/parts/pitot-ms4525do.md). Symptom of a reversed pair:
+  // a rock-solid zero airspeed in real airflow, because the IAS conversion in
+  // main.cpp clamps negative dP to zero. It reads dead, not backwards.
+  diffPressPa = ((int)pressureCounts - kZeroCounts) * (kPsiToPa / kCountsPerPsi);
   temperatureC = temperatureCounts * (200.0f / 2047.0f) - 50.0f;
   return true;
 }
