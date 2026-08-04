@@ -72,18 +72,34 @@ offset is re-measured at every boot (the offset is tens of Pa and drifts
 with temperature — the airplane must be stationary), the differential
 pressure is low-pass filtered and converted to indicated airspeed at fixed
 sea-level density; both travel in telemetry and cocpitView feeds the IAS to
-`VFR_HUD.airspeed`, which drives the HUD's airspeed tape. A sensor that
-stops answering (~0.5 s of failed reads — think a vibrating connector) goes
-NAN on the wire, shows as `---` on the HUD instead of a false 0, and is
-re-probed every 2 s, resuming with the boot zero offset (in-flight
-re-zeroing is impossible, it needs still air). The other I2C consumers
-survive a dead bus too: boot clocks a stuck slave free before `Wire.begin()`
-(an MCU reset mid-transaction otherwise leaves SDA held low across reboots,
-taking down every device on the bus) and IMU read errors freeze the attitude
-instead of feeding all-0xFF garbage into the complementary filter — the
-frozen state is flagged (`TELEM_FLAG_IMU_OK` clear), cocpitView stops
-publishing ATTITUDE and the HUD hides the horizon and yaw compass rather
-than display stuck values.
+`VFR_HUD.airspeed`, which drives the HUD's airspeed tape.
+
+All three I2C sensors share one failure model and one recovery mechanism
+(`SensorLifecycle` in the air main.cpp). The only failure designed for is a
+temporary bus disturbance — transactions fail or ACK corrupted data for a
+while, then the bus recovers; the sensors keep their power (and config
+registers) throughout, so recovery never re-initializes anything: a
+plausible data read is the proof of health. Each sensor dies time-based
+(0.5 s without a good read for IMU/pitot, 1 s for the slower baro), its
+telemetry fields go NAN (`---` on the HUD instead of a false 0, the frozen
+attitude is flagged via `TELEM_FLAG_IMU_OK` clear so cocpitView stops
+publishing ATTITUDE and the HUD hides horizon and compass), and revival
+takes 10 consecutive plausible reads — data plausibility checks (pitot
+10–90 % count band, baro 300–1100 hPa, IMU |a| ≥ 0.05 g) are the defense
+against corrupted-but-ACKed reads, since I2C has no data integrity check.
+A dead sensor is probed at most every 2 s (its failed transactions are
+slow), the pitot resumes with the boot zero offset (in-flight re-zeroing is
+impossible, it needs still air). A sensor absent at boot — probe or
+calibration failed twice — stays absent for the session: with no power
+loss in flight there is nothing that could make it appear later.
+Bus-level faults are handled separately: boot clocks a stuck slave free
+before `Wire.begin()` (an MCU reset mid-transaction otherwise leaves SDA
+held low across reboots, taking down every device on the bus), and when
+every present sensor has been silent for 2 s in flight the same rescue
+reruns (`Wire.end()` → clear → `Wire.begin()`, every 5 s) — a disturbance
+can abort a transaction mid-byte with the same SDA-stuck result. loop()
+distrusts a sensor snapshot older than 200 ms and clears the OK flags, so
+even a wedged sensor task cannot keep telemetry looking healthy.
 Crucially, all I2C access runs in a dedicated FreeRTOS task (core 0), not in
 the link loop: the Arduino/IDF I2C driver can stall ~1 s per transaction on
 a disturbed bus no matter what `Wire.setTimeOut` says (measured 1006 ms with

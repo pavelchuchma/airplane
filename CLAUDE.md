@@ -61,40 +61,41 @@ decisions. Keep it updated when the design evolves.
   driver stalls ~1 s per transaction on a disturbed bus regardless of
   `Wire.setTimeOut` (measured), which used to collapse the 50 Hz link loop
   to ~0.5 Hz; `loop()` (core 1) only copies a `SensorSnapshot` under a
-  spinlock and never touches the bus. `clearI2cBus()` clocks a stuck slave
-  free before `Wire.begin()` (an MCU reset mid-transaction leaves the slave
-  holding SDA low across reboots — every device then reads "not found"),
-  and `mpuReadRaw()` checks I2C errors, so a dead bus freezes attitude
-  instead of feeding the filter all-0xFF garbage (the HUD used to converge
-  to roll −135°/pitch +35°). A dead IMU (0.5 s of failed reads; all-zero
-  accel — an MPU that power-cycled back into sleep — counts as failed, and
-  a wake-up write is retried periodically) clears `TELEM_FLAG_IMU_OK`:
-  cocpitView then stops publishing ATTITUDE, so the HUD hides the horizon,
-  roll indicator and yaw compass instead of showing frozen values (heading
-  falls back to GPS course while moving). Revival takes 10 consecutive good
-  samples — floating-bus garbage occasionally passes the |a| plausibility
-  check and a single such sample used to blink the frozen HUD back on.
-  The baro has the same lifecycle: pressure outside 300–1100 hPa = bad read
-  (a power-cycled BMP280 ACKs but sends reset values), 1 s without a good
-  read → alt/climb NAN + `TELEM_FLAG_BARO_OK` drops, re-init via full
-  `bmp280::begin()` every 2 s keeping the boot reference. VFR_HUD/ALTITUDE
-  are sent unconditionally — a dead baro hides only alt/vario on the HUD,
-  never the airspeed.
+  spinlock and never touches the bus, and distrusts a snapshot older than
+  200 ms (OK flags read false — a wedged task can't publish stale data as
+  healthy). All three sensors share one **`SensorLifecycle`** designed for
+  a single failure model: temporary bus disturbance (failed transactions
+  or corrupted-but-ACKed data — I2C has no integrity check), sensors never
+  lose power, so recovery never re-initializes anything. Time-based death
+  (0.5 s IMU/pitot, 1 s baro) → fields NAN + the sensor's TELEM flag drops
+  (cocpitView hides the HUD elements; heading falls back to GPS course
+  while moving); revival = 10 consecutive plausible reads (single garbage
+  samples passing the checks used to blink the frozen HUD back on); a dead
+  sensor is probed at most every 2 s so its ~1 s failed transactions don't
+  starve the healthy ones. Plausibility checks: IMU |a| ≥ 0.05 g, baro
+  300–1100 hPa, pitot 10–90 % count band. dt for gyro integration and the
+  vario/pitot filters spans back to the last *good* sample (capped at the
+  death threshold) — sub-threshold dropouts don't spike the vario or drop
+  rotation. Boot: presence probed by ≤3 normal data reads, calibrations
+  (gyro bias / baro reference / pitot zero) need ≥ half their window and
+  retry once, else the sensor is `present = false` for the whole session
+  (nothing can make it appear without a power loss). Bus-level rescue:
+  `clearI2cBus()` clocks a stuck slave free before `Wire.begin()` at boot
+  (an MCU reset mid-transaction leaves SDA held low across reboots), and
+  reruns in flight (`Wire.end()` → clear → `begin()`, every 5 s) when all
+  present sensors have been silent > 2 s. VFR_HUD/ALTITUDE are sent
+  unconditionally — a dead baro hides only alt/vario on the HUD, never the
+  airspeed.
 - The MS4525DO pitot (I2C 0x28, 5 V part on the shared bus) is read at 50 Hz
-  (`src/air/ms4525do.cpp`): zero offset averaged at every boot while
-  stationary (`calibratePitotZero()`, it drifts with temperature), dP
-  low-pass filtered (τ = 0.3 s), IAS = √(2·dP/1.225) with negative dP
-  clamped to 0. Telemetry carries `diffPressPa` + `iasMps` (NAN = no/dead
-  sensor, 0.5 s without a good read drops `TELEM_FLAG_PITOT_OK` —
-  time-based, since failed transactions can take ~1 s each); cocpitView
-  puts IAS into `VFR_HUD.airspeed` — NaN passes through so the HUD tape
-  shows `---`, never a lying 0. A dead sensor is re-probed every 2 s and
-  resumes with the boot zero (`tryPitotRecovery()`; transient I2C dropouts
-  from vibration killed airspeed for a whole ride once). A sensor missing
-  at boot stays dead — there is no zero to resume with. Pressure counts
-  outside the sensor's legal 10–90 % output band are rejected (an all-zero
-  bus artifact decodes as status 0 and would poison the filter). Sensor
-  temperature is decoded but not sent (future TAS correction).
+  (`src/air/ms4525do.cpp` — read-only driver, no `begin()`: the sensor has
+  no registers): zero offset averaged at every boot while stationary
+  (`calibratePitotZero()`, it drifts with temperature), dP low-pass
+  filtered (τ = 0.3 s), IAS = √(2·dP/1.225) with negative dP clamped to 0.
+  Telemetry carries `diffPressPa` + `iasMps` (NAN = no/dead sensor);
+  cocpitView puts IAS into `VFR_HUD.airspeed` — NaN passes through so the
+  HUD tape shows `---`, never a lying 0. A revived sensor resumes with the
+  boot zero (in-flight re-zeroing needs still air). Sensor temperature is
+  decoded but not sent (future TAS correction).
 - GPS (Quescan G10A-F30, u-blox M10) is on UART2 (GPIO16/17, 38400 baud),
   read via TinyGPSPlus (`src/air/gps.cpp`). The chip is flash-less, so the
   firmware re-applies config at every boot via raw UBX-CFG-VALSET frames:

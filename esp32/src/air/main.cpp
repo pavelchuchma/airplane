@@ -77,22 +77,26 @@ constexpr float kGyroScale = (PI / 180.0f) / 131.0f;  // LSB -> rad/s, +-250 deg
 constexpr float kComplementaryAlpha = 0.98f;          // gyro vs. accelerometer weight
 constexpr uint32_t kSampleIntervalUs = 20000;         // 50 Hz
 constexpr int kGyroCalibrationSamples = 200;
-constexpr int kImuMaxConsecutiveFailures = 25;  // ~0.5 s of failed reads = IMU out
-constexpr int kImuRecoveryStreak = 10;  // consecutive good samples to revive a dead IMU
+constexpr uint32_t kImuDeadAfterUs = 500000;  // 0.5 s without a good read = IMU out
 
 constexpr uint32_t kBaroIntervalUs = 40000;   // 25 Hz, just under the BMP280's ~26 Hz output
 constexpr int kBaroReferenceSamples = 25;     // 1 s average defining altitude zero
 constexpr float kVarioTimeConstant = 0.5f;    // [s] climb-rate low-pass
-constexpr uint32_t kBaroDeadAfterUs = 1000000;      // 1 s without a good read = baro dead
-constexpr uint32_t kBaroRecoveryIntervalMs = 2000;  // re-init cadence for a dead baro
+constexpr uint32_t kBaroDeadAfterUs = 1000000;  // 1 s without a good read = baro dead
 
-constexpr int kPitotZeroSamples = 50;             // 1 s average defining pressure zero
-constexpr float kAirspeedTimeConstant = 0.3f;     // [s] differential-pressure low-pass
-constexpr uint32_t kPitotDeadAfterUs = 500000;    // 0.5 s without a good read = sensor dead
-constexpr uint32_t kPitotRecoveryIntervalMs = 2000;  // re-probe cadence for a dead sensor
-// A transaction against an absent/wedged device must fail fast: the Arduino
-// default lets it stall the loop for ~1 s, collapsing the 50 Hz telemetry
-// to ~0.5 Hz whenever a sensor drops off the bus.
+constexpr int kPitotZeroSamples = 50;           // 1 s average defining pressure zero
+constexpr float kAirspeedTimeConstant = 0.3f;   // [s] differential-pressure low-pass
+constexpr uint32_t kPitotDeadAfterUs = 500000;  // 0.5 s without a good read = sensor dead
+
+constexpr int kRecoveryStreak = 10;          // consecutive good reads reviving a dead sensor
+constexpr uint32_t kProbeIntervalMs = 2000;  // dead-sensor probe cadence (failed probes are slow)
+constexpr uint32_t kBusRescueAfterUs = 2000000;  // nothing good on the bus this long -> rescue
+constexpr uint32_t kBusRescueIntervalMs = 5000;  // bus-rescue attempt cadence
+constexpr uint32_t kI2cClockHz = 400000;
+constexpr uint32_t kSnapshotStaleUs = 200000;  // loop() distrusts a snapshot older than this
+// Shortens SOME failure paths but does NOT bound the worst ones: the driver
+// can still stall ~1 s per transaction on a disturbed bus (measured 1006 ms
+// with this set to 20) - which is why all I2C access lives in sensorTask.
 constexpr uint16_t kWireTimeoutMs = 20;
 constexpr float kAirDensity = 1.225f;  // [kg/m3] fixed sea-level rho - the result is IAS
 
@@ -100,37 +104,91 @@ float gyroBiasX = 0.0f, gyroBiasY = 0.0f, gyroBiasZ = 0.0f;
 float roll = 0.0f, pitch = 0.0f, yaw = 0.0f;
 uint32_t lastSampleUs = 0;
 
-bool baroOk = false;
-bool baroRefValid = false;  // boot reference exists - required for recovery
 float baroReferencePa = 0.0f;
 float altitudeM = NAN;
-float climbRate = 0.0f;
-uint32_t lastBaroUs = 0;
-uint32_t lastBaroGoodUs = 0;
-uint32_t lastBaroRecoveryMs = 0;
+float climbRate = NAN;
 
-bool pitotOk = false;
-bool pitotZeroValid = false;  // boot zero exists - required for recovery
 float pitotZeroPa = 0.0f;
 float diffPressPa = NAN;  // zero-corrected + low-pass filtered
 float iasMps = NAN;
-uint32_t lastPitotUs = 0;
-uint32_t lastPitotGoodUs = 0;
-uint32_t lastPitotRecoveryMs = 0;
+
+// One lifecycle for all three I2C sensors. The only failure mode designed
+// for is a temporary bus disturbance: transactions fail (slowly - see the
+// file header) or ACK corrupted data for a while, then the bus recovers.
+// The sensors keep their power - and therefore their config registers -
+// throughout, so recovery never re-initializes anything: a plausible data
+// read IS the proof of health. Death is time-based (failed transactions
+// can take ~1 s each), revival needs an unbroken streak of good reads
+// (garbage off a floating bus occasionally passes the plausibility checks,
+// and a single such sample must not blink the frozen HUD back on; the
+// streak samples themselves are discarded). A dead sensor is probed at
+// most every kProbeIntervalMs so its slow failures don't starve the
+// healthy sensors; a successful probe does not re-arm the throttle, so the
+// streak then builds at the full sample rate.
+struct SensorLifecycle {
+  SensorLifecycle(const char *name, uint32_t deadAfterUs)
+      : name(name), deadAfterUs(deadAfterUs) {}
+
+  const char *name;  // for the '#' diagnostics
+  uint32_t deadAfterUs;
+  bool present = false;  // decided once at boot: sensors never lose power,
+                         // so one absent at boot cannot appear later
+  bool ok = false;
+  uint32_t lastGoodUs = 0;
+  int goodStreak = 0;
+  uint32_t nextProbeMs = 0;
+
+  bool shouldAttempt(uint32_t nowMs) const {
+    return present && (ok || (int32_t)(nowMs - nextProbeMs) >= 0);
+  }
+
+  // Feeds one read attempt's verdict; true = process the sample. The
+  // caller detects the death transition (ok dropping) to NAN its outputs.
+  bool onResult(bool good, uint32_t nowUs, uint32_t nowMs) {
+    if (good) {
+      lastGoodUs = nowUs;
+      if (ok) {
+        return true;
+      }
+      if (++goodStreak >= kRecoveryStreak) {
+        ok = true;
+        goodStreak = 0;
+        Serial.printf("# %s recovered\n", name);
+      }
+      return false;
+    }
+    goodStreak = 0;
+    if (ok && nowUs - lastGoodUs >= deadAfterUs) {
+      ok = false;
+      Serial.printf("# %s stopped responding - data nan until it recovers\n", name);
+    }
+    if (!ok) {
+      nextProbeMs = nowMs + kProbeIntervalMs;
+    }
+    return false;
+  }
+};
+
+SensorLifecycle imuLc("MPU-6500", kImuDeadAfterUs);
+SensorLifecycle baroLc("BMP280", kBaroDeadAfterUs);
+SensorLifecycle pitotLc("MS4525DO", kPitotDeadAfterUs);
 
 // The sensor task publishes here, loop() copies under sensorMux. Defaults
 // are what telemetry reports until the first sample lands (the link is
-// already up during the ~2 s of boot calibration).
+// already up during the ~2 s of boot calibration); snapshotUs = 0 means
+// nothing was ever published, which loop()'s staleness check treats the
+// same as a wedged task - all OK flags read false.
 struct SensorSnapshot {
   float roll = 0.0f, pitch = 0.0f, yaw = 0.0f;
   float rollRate = 0.0f, pitchRate = 0.0f, yawRate = 0.0f;
   float baroAltM = NAN;
-  float climbMps = 0.0f;
+  float climbMps = NAN;
   float diffPressPa = NAN;
   float iasMps = NAN;
   bool baroOk = false;
   bool pitotOk = false;
   bool imuOk = false;  // clear = roll/pitch/yaw frozen at the last good sample
+  uint32_t snapshotUs = 0;  // micros() at publish time
 };
 portMUX_TYPE sensorMux = portMUX_INITIALIZER_UNLOCKED;
 SensorSnapshot sensorShared;
@@ -285,8 +343,11 @@ bool mpuReadRaw(int16_t *accel, int16_t *gyro) {
   return true;
 }
 
-// The ESP32 must be held still during this, otherwise the gyro bias will be wrong.
-void calibrateGyro() {
+// The ESP32 must be held still during this, otherwise the gyro bias will be
+// wrong. Requires at least half the window: a bias averaged from a handful
+// of noisy reads (or silently left at 0.0, as the old code did on a fully
+// failed window) would drift the yaw all flight while looking calibrated.
+bool calibrateGyro() {
   int16_t accel[3];
   int16_t gyro[3];
   long sumX = 0, sumY = 0, sumZ = 0;
@@ -300,18 +361,19 @@ void calibrateGyro() {
     }
     delay(3);
   }
-  if (count == 0) {
-    Serial.println("# MPU-6500 not responding - gyro bias not calibrated");
-    return;
+  if (count < kGyroCalibrationSamples / 2) {
+    return false;
   }
   gyroBiasX = (sumX / (float)count) * kGyroScale;
   gyroBiasY = (sumY / (float)count) * kGyroScale;
   gyroBiasZ = (sumZ / (float)count) * kGyroScale;
+  return true;
 }
 
 // Averages 1 s of pressure to define altitude zero at the boot location.
 // The first few samples are discarded while the IIR filter settles.
-void calibrateBaroReference() {
+// Requires at least half the window, like calibrateGyro().
+bool calibrateBaroReference() {
   constexpr int kDiscard = 5;
   float sum = 0.0f;
   int count = 0;
@@ -323,42 +385,20 @@ void calibrateBaroReference() {
     }
     delay(40);
   }
-  if (count > 0) {
-    baroReferencePa = sum / count;
-    baroRefValid = true;
-  } else {
-    baroOk = false;
+  if (count < kBaroReferenceSamples / 2) {
+    return false;
   }
-}
-
-// Same shape as tryPitotRecovery below. A power-cycled BMP280 loses its
-// config registers (it ACKs but the data registers read as reset values),
-// so recovery re-runs the full begin(); the boot reference pressure is
-// kept - altitude stays relative to the boot location.
-void tryBaroRecovery() {
-  if (!baroRefValid) {
-    return;
-  }
-  uint32_t nowMs = millis();
-  if (nowMs - lastBaroRecoveryMs < kBaroRecoveryIntervalMs) {
-    return;
-  }
-  lastBaroRecoveryMs = nowMs;
-  if (!bmp280::begin()) {
-    return;
-  }
-  baroOk = true;
-  lastBaroUs = micros();
-  lastBaroGoodUs = lastBaroUs;
-  Serial.println("# BMP280 recovered");
+  baroReferencePa = sum / count;
+  return true;
 }
 
 // Averages ~1 s of readings at zero airflow to define the pressure zero.
 // The MS4525DO zero offset is tens of Pa and drifts with temperature, so it
 // is re-measured at every boot; the airplane must be stationary and the
 // pitot shielded from wind. The first few samples are discarded like in
-// calibrateBaroReference().
-void calibratePitotZero() {
+// calibrateBaroReference(); at least half the window is required (a zero
+// from one noisy sample reads as several m/s of phantom airspeed).
+bool calibratePitotZero() {
   constexpr int kDiscard = 5;
   float sum = 0.0f;
   int count = 0;
@@ -370,72 +410,47 @@ void calibratePitotZero() {
     }
     delay(20);
   }
-  if (count > 0) {
-    pitotZeroPa = sum / count;
-    pitotZeroValid = true;
-  } else {
-    pitotOk = false;
+  if (count < kPitotZeroSamples / 2) {
+    return false;
   }
-}
-
-// A transient I2C dropout (vibration, loose wire) must not kill airspeed
-// for the rest of the flight: a dead sensor is re-probed every
-// kPitotRecoveryIntervalMs and on success resumes with the boot zero
-// offset (re-zeroing in flight is impossible - it needs still air).
-// A sensor with no boot zero stays dead: measuring against zero = 0 would
-// show a false airspeed of several m/s.
-void tryPitotRecovery(uint32_t now) {
-  if (!pitotZeroValid) {
-    return;
-  }
-  uint32_t nowMs = millis();
-  if (nowMs - lastPitotRecoveryMs < kPitotRecoveryIntervalMs) {
-    return;
-  }
-  lastPitotRecoveryMs = nowMs;
-  if (!ms4525do::begin()) {
-    return;
-  }
-  pitotOk = true;
-  lastPitotUs = now;
-  lastPitotGoodUs = now;
-  Serial.println("# MS4525DO recovered");
+  pitotZeroPa = sum / count;
+  return true;
 }
 
 // Reads the barometer at 25 Hz; altitude is relative to the boot reference,
 // climb rate is a low-pass-filtered derivative (raw would be +-1 m/s noise).
-// 1 s without a plausible reading = baro dead: alt/climb go NAN and the
-// TELEM_FLAG_BARO_OK flag drops until tryBaroRecovery() brings it back.
-void updateBaro(uint32_t now) {
-  if (!baroOk) {
-    tryBaroRecovery();
+// kBaroDeadAfterUs without a plausible reading = baro dead: alt/climb go
+// NAN and TELEM_FLAG_BARO_OK drops until the lifecycle revives it.
+void updateBaro(uint32_t nowUs, uint32_t nowMs) {
+  static uint32_t lastAttemptUs = 0;  // 25 Hz gate only; dt comes from lastGoodUs
+  if (!baroLc.shouldAttempt(nowMs) || nowUs - lastAttemptUs < kBaroIntervalUs) {
     return;
   }
-  if (now - lastBaroUs < kBaroIntervalUs) {
-    return;
-  }
-  float dt = (now - lastBaroUs) / 1000000.0f;
-  lastBaroUs = now;
+  lastAttemptUs = nowUs;
 
   float pressure, temperature;
-  // The plausibility band (300-1100 hPa) catches a power-cycled chip: it
-  // ACKs, but with the config lost the data registers hold reset values
-  // that would otherwise decode as a believable-looking constant altitude.
+  // The plausibility band (300-1100 hPa) rejects corrupted-but-ACKed data:
+  // I2C acknowledges per byte but carries no integrity check, so a
+  // disturbed bus can deliver garbage that would otherwise decode as a
+  // believable-looking altitude.
   bool good = bmp280::read(pressure, temperature) && pressure > 30000.0f && pressure < 110000.0f;
-  if (!good) {
-    if (now - lastBaroGoodUs >= kBaroDeadAfterUs) {
-      baroOk = false;
+  bool wasOk = baroLc.ok;
+  uint32_t prevGoodUs = baroLc.lastGoodUs;
+  if (!baroLc.onResult(good, nowUs, nowMs)) {
+    if (wasOk && !baroLc.ok) {
       altitudeM = NAN;
       climbRate = NAN;
-      Serial.println("# BMP280 stopped responding - alt/climb nan until it recovers");
     }
     return;
   }
-  lastBaroGoodUs = now;
 
+  // dt spans back to the last good sample (capped at the death threshold),
+  // so a sub-threshold dropout can't inflate the derivative - the altitude
+  // delta and the time it took stay consistent.
+  float dt = min(nowUs - prevGoodUs, kBaroDeadAfterUs) / 1000000.0f;
   float alt = bmp280::altitudeFromPressure(pressure, baroReferencePa);
   if (isnan(altitudeM)) {
-    climbRate = 0.0f;  // fresh start after boot/recovery - no derivative yet
+    climbRate = 0.0f;  // fresh start after boot/revival - no derivative yet
   } else {
     float rate = (alt - altitudeM) / dt;
     float alpha = dt / (kVarioTimeConstant + dt);
@@ -447,32 +462,27 @@ void updateBaro(uint32_t now) {
 // Reads the pitot at the 50 Hz sample rate. The differential pressure is
 // zero-corrected and low-pass filtered before the IAS conversion - the
 // sqrt blows raw sensor noise up at low speeds. Negative (filtered) dP
-// clamps to zero airspeed. A sensor that stops answering for
-// kPitotMaxConsecutiveFailures reads is declared dead - fields go NAN and
-// the TELEM_FLAG_PITOT_OK flag drops - until tryPitotRecovery() brings it
-// back.
-void updatePitot(uint32_t now) {
-  if (!pitotOk) {
-    tryPitotRecovery(now);
+// clamps to zero airspeed. kPitotDeadAfterUs without a good read = sensor
+// dead: fields go NAN and TELEM_FLAG_PITOT_OK drops until the lifecycle
+// revives it, resuming with the boot zero offset (re-zeroing in flight is
+// impossible - it needs still air).
+void updatePitot(uint32_t nowUs, uint32_t nowMs) {
+  if (!pitotLc.shouldAttempt(nowMs)) {
     return;
   }
-  float dt = (now - lastPitotUs) / 1000000.0f;
-  lastPitotUs = now;
-
   float pressure, temperature;
-  if (!ms4525do::read(pressure, temperature)) {
-    // Time-based, not attempt-based: failed transactions can be slow, and
-    // the sensor must read as dead (NAN) within a fixed real-time budget.
-    if (now - lastPitotGoodUs >= kPitotDeadAfterUs) {
-      pitotOk = false;
+  bool good = ms4525do::read(pressure, temperature);
+  bool wasOk = pitotLc.ok;
+  uint32_t prevGoodUs = pitotLc.lastGoodUs;
+  if (!pitotLc.onResult(good, nowUs, nowMs)) {
+    if (wasOk && !pitotLc.ok) {
       diffPressPa = NAN;
       iasMps = NAN;
-      Serial.println("# MS4525DO stopped responding - airspeed nan until it recovers");
     }
     return;
   }
-  lastPitotGoodUs = now;
 
+  float dt = min(nowUs - prevGoodUs, kPitotDeadAfterUs) / 1000000.0f;
   float dp = pressure - pitotZeroPa;
   if (isnan(diffPressPa)) {
     diffPressPa = dp;
@@ -483,109 +493,171 @@ void updatePitot(uint32_t now) {
   iasMps = sqrtf(2.0f * max(diffPressPa, 0.0f) / kAirDensity);
 }
 
+// Boot presence probes: a few normal data reads - cheap, retried against a
+// bus that may still be settling, and the only operation every sensor is
+// guaranteed to support (the MS4525DO has no registers at all; the old
+// write-mode probe rejected clones that NACK address+W).
+bool probeImu() {
+  mpuWriteRegister(kRegPowerManagement1, 0x00);  // wake up from sleep mode
+  delay(50);
+  int16_t accel[3];
+  int16_t gyro[3];
+  for (int i = 0; i < 3; i++) {
+    if (mpuReadRaw(accel, gyro)) {
+      return true;
+    }
+    delay(10);
+  }
+  return false;
+}
+
+bool probePitot() {
+  float pressure, temperature;
+  for (int i = 0; i < 3; i++) {
+    if (ms4525do::read(pressure, temperature)) {
+      return true;
+    }
+    delay(10);
+  }
+  return false;
+}
+
+bool probeBaro() {
+  // begin() is the probe: the BMP280 is the only sensor with real init
+  // (chip-id check, calibration load, mode config) - and it runs only
+  // here, at boot. The config survives any bus disturbance.
+  for (int i = 0; i < 3; i++) {
+    if (bmp280::begin()) {
+      return true;
+    }
+    delay(10);
+  }
+  return false;
+}
+
+// A disturbance can abort a transaction mid-byte and leave a slave holding
+// SDA low - a bus-level latch-up no amount of per-sensor probing clears.
+// The signature is every present sensor going silent at once; the cure is
+// the same SCL clocking that frees the bus at boot.
+void tryBusRescue(uint32_t nowUs, uint32_t nowMs) {
+  static uint32_t nextRescueMs = 0;
+  if ((int32_t)(nowMs - nextRescueMs) < 0) {
+    return;
+  }
+  bool anyPresent = false;
+  for (const SensorLifecycle *lc : {&imuLc, &baroLc, &pitotLc}) {
+    if (!lc->present) {
+      continue;
+    }
+    anyPresent = true;
+    if (lc->ok || nowUs - lc->lastGoodUs < kBusRescueAfterUs) {
+      return;  // something on the bus is still alive (or reviving)
+    }
+  }
+  if (!anyPresent) {
+    return;
+  }
+  nextRescueMs = nowMs + kBusRescueIntervalMs;
+  Serial.println("# whole I2C bus dead - re-clocking it free");
+  Wire.end();
+  clearI2cBus();
+  Wire.begin();
+  Wire.setClock(kI2cClockHz);  // begin() resets the clock to its default
+  Wire.setTimeOut(kWireTimeoutMs);
+  // Probe immediately instead of waiting out the per-sensor throttles.
+  imuLc.nextProbeMs = baroLc.nextProbeMs = pitotLc.nextProbeMs = nowMs;
+}
+
 // Owns the I2C bus and every sensor on it - see the file header for why
 // this is a separate task. Bring-up, calibration and the 50 Hz sampling
 // all happen here; a stalled transaction only delays the next sample.
 void sensorTask(void *) {
   clearI2cBus();
   Wire.begin();
-  Wire.setClock(400000);
+  Wire.setClock(kI2cClockHz);
   Wire.setTimeOut(kWireTimeoutMs);
 
-  mpuWriteRegister(kRegPowerManagement1, 0x00);  // wake up from sleep mode
-  delay(50);
+  // Presence is decided once, here: the sensors never lose power in
+  // flight, so one absent now cannot appear later - and probing an absent
+  // device costs ~1 s per failed transaction, forever. '#' lines are
+  // ignored by the cocpitView parser.
+  imuLc.present = probeImu();
+  baroLc.present = probeBaro();
+  pitotLc.present = probePitot();
 
-  baroOk = bmp280::begin();
-  if (!baroOk) {
-    // '#' lines are ignored by the cocpitView parser
-    Serial.println("# BMP280 not found - alt/climb will be nan");
+  // Boot calibrations, one retry each: a transient bus glitch during the
+  // window must not cost the whole flight's data. A sensor whose
+  // calibration fails twice is treated as absent - resuming later with a
+  // half-made zero/bias/reference would look healthy and lie.
+  if (imuLc.present && !(calibrateGyro() || calibrateGyro())) {
+    imuLc.present = false;
   }
-  pitotOk = ms4525do::begin();
-  if (!pitotOk) {
-    Serial.println("# MS4525DO not found - airspeed will be nan");
+  if (baroLc.present && !(calibrateBaroReference() || calibrateBaroReference())) {
+    baroLc.present = false;
   }
-
-  calibrateGyro();
-  if (baroOk) {
-    calibrateBaroReference();
-  }
-  if (pitotOk) {
-    calibratePitotZero();
+  if (pitotLc.present && !(calibratePitotZero() || calibratePitotZero())) {
+    pitotLc.present = false;
   }
 
-  uint32_t lastAttitudeUs = micros();
-  lastBaroUs = lastAttitudeUs;
-  lastBaroGoodUs = lastAttitudeUs;
-  lastPitotUs = lastAttitudeUs;
-  lastPitotGoodUs = lastAttitudeUs;
-  int imuFailures = 0;
-  int imuGoodStreak = 0;
+  uint32_t bootUs = micros();
+  for (SensorLifecycle *lc : {&imuLc, &baroLc, &pitotLc}) {
+    if (lc->present) {
+      lc->ok = true;
+      lc->lastGoodUs = bootUs;
+    } else {
+      Serial.printf("# %s absent - data nan for this flight\n", lc->name);
+    }
+  }
+
   TickType_t lastWake = xTaskGetTickCount();
 
   for (;;) {
     vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(20));  // 50 Hz
     uint32_t now = micros();
-    float dt = (now - lastAttitudeUs) / 1000000.0f;
-    lastAttitudeUs = now;
+    uint32_t nowMs = millis();
 
-    updateBaro(now);
-    updatePitot(now);
+    updateBaro(now, nowMs);
+    updatePitot(now, nowMs);
 
-    int16_t accelRaw[3];
-    int16_t gyroRaw[3];
     float gx = 0.0f, gy = 0.0f, gz = 0.0f;  // body rates, zero while the IMU is out
-    float ax = 0.0f, ay = 0.0f, az = 0.0f;
-    bool imuSample = mpuReadRaw(accelRaw, gyroRaw);
-    if (imuSample) {
-      ax = accelRaw[0] * kAccelScale;
-      ay = accelRaw[1] * kAccelScale;
-      az = accelRaw[2] * kAccelScale;
-      // An MPU that lost power comes back in sleep mode: it ACKs but the
-      // data registers read all-zero. |a| this low is aerodynamically
-      // impossible, so treat it as a failed sample.
-      imuSample = sqrtf(ax * ax + ay * ay + az * az) >= 0.05f;
-    }
-    if (imuSample && imuFailures >= kImuMaxConsecutiveFailures) {
-      // Recovery hysteresis: garbage bytes off a floating bus occasionally
-      // pass the plausibility check and a single such "sample" must not
-      // revive the IMU (it used to blink the frozen horizon/compass back
-      // for 0.5 s). Only an unbroken streak of good samples counts; the
-      // streak samples themselves are discarded, the filter resumes after.
-      if (++imuGoodStreak >= kImuRecoveryStreak) {
-        imuFailures = 0;
-        imuGoodStreak = 0;
-        Serial.println("# MPU-6500 recovered");
+    if (imuLc.shouldAttempt(nowMs)) {
+      int16_t accelRaw[3];
+      int16_t gyroRaw[3];
+      float ax = 0.0f, ay = 0.0f, az = 0.0f;
+      bool good = mpuReadRaw(accelRaw, gyroRaw);
+      if (good) {
+        ax = accelRaw[0] * kAccelScale;
+        ay = accelRaw[1] * kAccelScale;
+        az = accelRaw[2] * kAccelScale;
+        // |a| this low is aerodynamically impossible - a disturbed bus can
+        // ACK corrupted (e.g. all-zero) data, and the accel magnitude is
+        // the cheapest plausibility check the sample offers.
+        good = sqrtf(ax * ax + ay * ay + az * az) >= 0.05f;
       }
-    } else if (imuSample) {
-      imuFailures = 0;
-      imuGoodStreak = 0;
+      uint32_t prevGoodUs = imuLc.lastGoodUs;
+      if (imuLc.onResult(good, now, nowMs)) {
+        gx = gyroRaw[0] * kGyroScale - gyroBiasX;
+        gy = gyroRaw[1] * kGyroScale - gyroBiasY;
+        gz = gyroRaw[2] * kGyroScale - gyroBiasZ;
 
-      gx = gyroRaw[0] * kGyroScale - gyroBiasX;
-      gy = gyroRaw[1] * kGyroScale - gyroBiasY;
-      gz = gyroRaw[2] * kGyroScale - gyroBiasZ;
+        float rollAccel = atan2f(ay, az);
+        float pitchAccel = atan2f(-ax, sqrtf(ay * ay + az * az));
 
-      float rollAccel = atan2f(ay, az);
-      float pitchAccel = atan2f(-ax, sqrtf(ay * ay + az * az));
-
-      roll = kComplementaryAlpha * (roll + gx * dt) + (1.0f - kComplementaryAlpha) * rollAccel;
-      pitch = kComplementaryAlpha * (pitch + gy * dt) + (1.0f - kComplementaryAlpha) * pitchAccel;
-      yaw += gz * dt;  // no magnetometer - gyro integration only, drifts over time
-    } else {
-      imuFailures++;
-      imuGoodStreak = 0;
-      if (imuFailures == kImuMaxConsecutiveFailures) {
-        // Attitude freezes at the last good sample - much better than the
-        // fake roll/pitch the filter would converge to on garbage reads.
-        // TELEM_FLAG_IMU_OK drops, so the HUD hides horizon and compass.
-        Serial.println("# MPU-6500 not responding - attitude frozen");
-      }
-      if (imuFailures % kImuMaxConsecutiveFailures == 0) {
-        // Periodic recovery: wake the MPU again in case it power-cycled
-        // back into sleep mode (it comes back asleep, ACKing but reading
-        // all-zero).
-        mpuWriteRegister(kRegPowerManagement1, 0x00);
+        // dt spans back to the last good sample (capped), so the rotation
+        // during a sub-threshold dropout is approximated by this sample's
+        // rates instead of silently dropped - yaw has no other reference
+        // to pull it back. When the IMU is dead longer, attitude freezes
+        // at the last good sample (far better than the fake roll/pitch the
+        // filter would converge to on garbage) and revival resumes with
+        // dt = one tick: the discarded streak reads refreshed lastGoodUs.
+        float dt = min(now - prevGoodUs, kImuDeadAfterUs) / 1000000.0f;
+        roll = kComplementaryAlpha * (roll + gx * dt) + (1.0f - kComplementaryAlpha) * rollAccel;
+        pitch = kComplementaryAlpha * (pitch + gy * dt) + (1.0f - kComplementaryAlpha) * pitchAccel;
+        yaw += gz * dt;  // no magnetometer - gyro integration only, drifts over time
       }
     }
+
+    tryBusRescue(now, nowMs);
 
     portENTER_CRITICAL(&sensorMux);
     sensorShared.roll = roll;
@@ -598,9 +670,10 @@ void sensorTask(void *) {
     sensorShared.climbMps = climbRate;
     sensorShared.diffPressPa = diffPressPa;
     sensorShared.iasMps = iasMps;
-    sensorShared.baroOk = baroOk;
-    sensorShared.pitotOk = pitotOk;
-    sensorShared.imuOk = imuFailures < kImuMaxConsecutiveFailures;
+    sensorShared.baroOk = baroLc.ok;
+    sensorShared.pitotOk = pitotLc.ok;
+    sensorShared.imuOk = imuLc.ok;
+    sensorShared.snapshotUs = now;
     portEXIT_CRITICAL(&sensorMux);
   }
 }
@@ -690,6 +763,13 @@ void loop() {
   portENTER_CRITICAL(&sensorMux);
   s = sensorShared;
   portEXIT_CRITICAL(&sensorMux);
+  // A wedged sensor task (a transaction the driver never times out of)
+  // must not keep publishing pre-failure data as healthy: age out the OK
+  // flags. A single ~1 s stalled transaction blanks all three for its
+  // duration - honest, the data in the snapshot really is that old.
+  if (now - s.snapshotUs > kSnapshotStaleUs) {
+    s.baroOk = s.pitotOk = s.imuOk = false;
+  }
 
   gps::Fix f = gps::fix();
 

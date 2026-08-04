@@ -28,7 +28,9 @@ The dP sign convention is inverted relative to the ArduPilot/PX4 MS4525DO driver
 
 **Failure scenario:** A stray or malicious ESP32 broadcasting 20-byte frames with `msgId=MSG_COMMAND` and `version=PROTOCOL_VERSION` refreshes `lastCmdMs` on the air side, suppressing the safety-critical 500 ms failsafe while the real ground link is down — and once servos exist, its channel values become live control inputs to the airplane.
 
-## 3. `[ ]` begin()'s resting-counts check rejects healthy sensors (in flight + offset clones) — CONFIRMED (correctness)
+## 3. `[x]` begin()'s resting-counts check rejects healthy sensors (in flight + offset clones) — CONFIRMED (correctness)
+
+> **Fixed 2026-08-04:** `ms4525do::begin()` deleted entirely (recovery-model simplification, `doc/plans/2026-08-04-sensor-lifecycle-simplification.md`); presence is proven by the boot zero-calibration reads, recovery by plausible data reads at any airspeed.
 
 `esp32/src/air/ms4525do.cpp:60` (used from `esp32/src/air/main.cpp:396`)
 
@@ -36,7 +38,9 @@ The dP sign convention is inverted relative to the ArduPilot/PX4 MS4525DO driver
 
 **Failure scenario:** (a) The pitot drops off the bus for a moment during fast flight (vibration — the exact scenario `tryPitotRecovery` exists for); every 2 s re-probe fails the midpoint check because the airplane is flying, so airspeed stays `---` until the plane slows below ~50 m/s. (b) A clone unit with a large fixed offset (parts doc gotcha 5: "clone quality varies... sanity-check ~8192 counts at rest") reads e.g. 6500 counts at rest, `begin()` returns false at every boot, and the sensor is permanently reported "# MS4525DO not found" although 4-byte reads work and boot zeroing would have corrected the offset.
 
-## 4. `[ ]` Failed zero calibration permanently disables pitot recovery — CONFIRMED (correctness)
+## 4. `[x]` Failed zero calibration permanently disables pitot recovery — CONFIRMED (correctness)
+
+> **Fixed 2026-08-04:** calibration is retried once; if it fails twice the sensor is explicitly `present = false` for the session (stated `#` diagnostic) — no more half-dead state where `pitotOk` is false but recovery is silently impossible.
 
 `esp32/src/air/main.cpp:377`
 
@@ -44,7 +48,9 @@ If `calibratePitotZero()` gets zero good reads in its 1.1 s window (transient bu
 
 **Failure scenario:** Sensor passes `ms4525do::begin()` at power-on, then a ~1.1 s I2C disturbance (vibration from starting the motor, loose connector) spans the calibration window; all 55 reads fail, `count == 0`, `pitotOk = false`, `pitotZeroValid = false`. The sensor recovers electrically two seconds later but `tryPitotRecovery()` never probes it, so the whole flight has no airspeed, with no way back short of rebooting the airplane.
 
-## 5. `[ ]` Vario dt from last attempt but delta from last good read — CONFIRMED (cleanup)
+## 5. `[x]` Vario dt from last attempt but delta from last good read — CONFIRMED (cleanup)
+
+> **Fixed 2026-08-04:** dt measured from the last good read (see finding 5 of the 815a810 review).
 
 `esp32/src/air/main.cpp:417`
 
@@ -52,7 +58,9 @@ If `calibratePitotZero()` gets zero good reads in its 1.1 s window (transient bu
 
 **Failure scenario:** Baro reads fail for 0.5–0.9 s (below the 1 s dead threshold) while the plane climbs 2 m; the next good sample computes rate = 2 m / 0.04 s = 50 m/s and feeds it into the vario low-pass — the HUD vario jumps wildly after every transient I2C hiccup. dt should be measured from `lastBaroGoodUs`, not `lastBaroUs`.
 
-## 6. `[ ]` Pitot zero calibration accepts a single-sample average — CONFIRMED (correctness)
+## 6. `[x]` Pitot zero calibration accepts a single-sample average — CONFIRMED (correctness)
+
+> **Fixed 2026-08-04:** all three boot calibrations require at least half their sample window and are retried once.
 
 `esp32/src/air/main.cpp:373`
 
@@ -60,7 +68,9 @@ If `calibratePitotZero()` gets zero good reads in its 1.1 s window (transient bu
 
 **Failure scenario:** If 49 of 50 boot reads fail (marginal wiring) the pitot zero is one noisy sample, easily tens of Pa off; per the project's own doc gotcha 1 that offset error reads as "too fast", so the HUD shows several m/s of phantom airspeed all flight (and a future auto-throttle would fly dangerously slow), with no indication calibration was degraded.
 
-## 7. `[ ]` begin() decides presence from one read, no retry — CONFIRMED (cleanup)
+## 7. `[x]` begin() decides presence from one read, no retry — CONFIRMED (cleanup)
+
+> **Fixed 2026-08-04:** boot presence is up to 3 normal-read attempts (`probePitot()`), and the zero calibration behind it tolerates a half-failed window.
 
 `esp32/src/air/ms4525do.cpp:57`
 
@@ -68,7 +78,9 @@ If `calibratePitotZero()` gets zero good reads in its 1.1 s window (transient bu
 
 **Failure scenario:** One glitched byte at boot (status bits ≠ 0, or a short read while the bus settles right after `clearI2cBus`/MPU wake) fails `begin()`; `pitotOk` and `pitotZeroValid` stay false and `tryPitotRecovery()` never runs, so a healthy sensor produces no airspeed for the whole flight. Retrying the probe read 2–3 times (the data is refreshed every 0.5 ms) removes the single-sample fragility.
 
-## 8. `[ ]` Write-mode presence probe on a read-only I2C device — PLAUSIBLE (correctness)
+## 8. `[x]` Write-mode presence probe on a read-only I2C device — PLAUSIBLE (correctness)
+
+> **Fixed 2026-08-04:** the write-mode probe went away with `ms4525do::begin()`; presence is probed with the same 4-byte `read()` the driver uses everywhere.
 
 `esp32/src/air/ms4525do.cpp:51`
 
