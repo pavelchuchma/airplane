@@ -100,7 +100,7 @@ If `calibratePitotZero()` gets zero good reads in its 1.1 s window (transient bu
 
 **Failure scenario:** Bus rise time degraded by the pitot cable's capacitance makes 400 kHz marginal specifically for the MS4525DO (the MPU-6500 and BMP280 sit directly on the well-pulled-up GY-91 board and tolerate it): the sensor NACKs or returns corrupted transfers, `begin()` fails or reads fail continuously, and airspeed reads `---` in practice while the other two sensors work — dropping to 100 kHz (still 2× the needed 50 Hz × 4-byte throughput) is the standard fix.
 
-## 10. `[ ]` 5 V-powered pitot may not see 3.3 V bus highs as high — PLAUSIBLE (correctness, hardware)
+## 10. `[-]` 5 V-powered pitot may not see 3.3 V bus highs as high — PLAUSIBLE (correctness, hardware)
 
 > **Partially addressed 2026-08-04:** the 400 kHz half is gone (bus now 100 kHz). The VIH margin itself is a wiring item — powering the sensor from 3.3 V (in spec, 2.7–5.5 V) or a BSS138 level shifter would fix it fully.
 >
