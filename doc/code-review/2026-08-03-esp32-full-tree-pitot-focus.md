@@ -102,7 +102,9 @@ If `calibratePitotZero()` gets zero good reads in its 1.1 s window (transient bu
 
 ## 10. `[ ]` 5 V-powered pitot may not see 3.3 V bus highs as high — PLAUSIBLE (correctness, hardware)
 
-> **Partially addressed 2026-08-04:** the 400 kHz half is gone (bus now 100 kHz). The VIH margin itself is a wiring item — powering the sensor from 3.3 V (in spec, 2.7–5.5 V) remains open for the bench.
+> **Partially addressed 2026-08-04:** the 400 kHz half is gone (bus now 100 kHz). The VIH margin itself is a wiring item — powering the sensor from 3.3 V (in spec, 2.7–5.5 V) or a BSS138 level shifter would fix it fully.
+>
+> **Deferred 2026-08-04:** the sensor works fine at 100 kHz in practice (the guaranteed V_IH ≥ 0.7·VDD = 3.5 V is a worst-case spec; typical CMOS thresholds sit near 0.5·VDD ≈ 2.5 V, and the same 5 V-sensor-on-3.3 V-bus arrangement ships on Pixhawks). Revisit only if the pitot starts misbehaving — intermittent NACKs/garbage, especially when warm or with a longer cable, would be the signature.
 
 `esp32/src/air/main.cpp:46` (wiring comment)
 
