@@ -26,7 +26,7 @@
 | RF | 5.8 GHz, **40 CH** (5 bands × 8: A/B/E/F/R), FM analog |
 | Output power | **200 mW (~23 dBm)** — this ordered variant; 600 mW version exists |
 | Supply | **DC 7–24 V** (2S–4S LiPo direct; 3S recommended) — NOT the 5 V whoop type |
-| Current | ~150 mA @ 200 mW |
+| Current | ~150 mA @ 200 mW (spec) — measured with camera: see §5 |
 | Video in | CVBS 0.8–1.2 Vp-p / 75 Ω, PAL & NTSC transparent |
 | Antenna | RP-SMA female, ~2 dBi whip |
 | Channel select | push-button + LEDs (frequency table printed on board) |
@@ -59,13 +59,30 @@ VTX antenna: RP-SMA whip — ALWAYS attach before power-up
 
 Ground side: receiver dongle → OTG cable → Android phone (Go FPV app), or USB → PC as webcam. No pairing — power the VTX, long-press the RX button to auto-search.
 
-## 5. Latency
+## 5. Power draw — measured (Aug 2026)
+
+- Whole chain (camera + 200 mW VTX) straight from a 3S pack: **312 mA @ 12 V
+  ≈ 3.7 W**.
+- The chain is a **constant-power load** — the VTX derives its internal rails
+  with switching regulators, not a linear one. Verified by feeding it through
+  a Mini-360 buck at 7.5 V: battery draw *rose* to 350 mA @ 12 V (the ~0.45 W
+  difference is the converter's own loss, and the module runs warm).
+  **Do not put a step-down converter in front of it** — power camera and VTX
+  directly from the pack.
+- The VTX heatsink heat is RF power-amplifier dissipation (~25–35 % PA
+  efficiency → roughly 1–1.5 W of heat at 200 mW out) and does not depend on
+  supply voltage. Mount with airflow; a lower rail changes nothing.
+- Motor at full throttle produced no visible interference in the video,
+  with or without the buck (bench test — recheck once installed in the
+  airframe).
+
+## 6. Latency
 
 - Pure analog chain (camera → VTX → RX): < 40 ms
 - UVC digitization + USB + Android rendering adds ~50–100 ms → **~100 ms glass-to-glass** total
 - Fine for line-of-sight/camera-plane use; not for proximity/racing flying
 
-## 6. Legal note (CZ/EU)
+## 7. Legal note (CZ/EU)
 
 License-free 5.8 GHz analog video is limited to **25 mW EIRP** (ERC Rec 70-03). Both 200 mW and 600 mW settings **exceed the limit** — transmitting legally requires a HAM (amateur radio) license, and these generic VTXs have no valid CE/RED certification. Use accordingly (low power indoors/test bench, or get the license).
 

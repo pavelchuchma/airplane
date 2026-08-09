@@ -135,39 +135,74 @@ wired star-style from the converter outputs.
 
 ```
 3S Li-ion (9.0–12.6 V)
- ├─ buck → 7.5–8 V ── LC filter ──► FPV camera + VTX      (Mini-360 / MP1584)
- ├─ buck → 5 V ► servos (PCA9685 V+)                      (5 A BEC, or own Mini-360)
- └─ buck → 5 V ► logic:                                   (Mini-360)
-      ├─ ESP32 devkit VIN (on-board AMS1117 feeds the ESP32 only)
-      ├─ MS4525DO (5 V part; RC filter 10–22 Ω + 100 µF)
-      └─ LDO 3.3 V (HT7833/ME6211) ► GY-91, GPS
+ ├─ ESC (RAY G2 R-20B, 20 A) ─► motor
+ │    └─ linear BEC 5 V ──────► servos (PCA9685 V+)
+ ├─ buck → 5 V ► logic:                                   (Mini-360)
+ │    ├─ ESP32 devkit VIN (on-board AMS1117 feeds the ESP32 only)
+ │    ├─ MS4525DO (5 V part; RC filter 10–22 Ω + 100 µF)
+ │    └─ LDO 3.3 V (HT7833/ME6211) ► GY-91, GPS
+ └─────────────────► FPV camera + VTX  (direct from pack — measured, see below)
 ```
 
 Reasoning behind the choices:
 
-- **No 2S tap for the camera/VTX.** Tapping two cells would cut the VTX's
-  linear-regulator heat (~1 W at 12 V), but it unbalances the pack and, worse,
-  2S Li-ion sags to 6.0–6.6 V near empty — below the VTX's 7 V minimum, so
-  video would die mid-flight. A small buck to ~7.5 V from the full pack gives
-  the same heat relief without either problem. The buck's switching noise
-  shows up as lines in analog video, hence the LC filter (~10–22 µH +
-  220–470 µF low-ESR) on its output.
+- **Servos run off the ESC's BEC; the ESP32 never does.** The RAY G2 R-20B
+  has a *linear* 5 V/2 A BEC, and on 3S that rating is fiction — dropping
+  12.6 V to 5 V burns 7.6 W per amp on a 19 g board. What makes it work is
+  that servos idle far below stall: three servos holding trim plus a receiver
+  draw ~0.3 A (≈2.3 W, survivable in prop wash), and the ~0.95 A peak when
+  all three move at once lasts fractions of a second, which the board's
+  thermal mass absorbs. This is measured, not assumed — the same ESC already
+  flies the existing 3S model with three servos and a RadioLink receiver.
+  The tail risk is a *sustained* overload: a jammed linkage or a surface held
+  against its servo pulls ~1.2 A continuously (~9 W), which cooks the BEC and,
+  on thermal shutdown, takes the servos with it. That risk is identical in the
+  existing model and is accepted. The ESP32 is a different matter — its
+  300–500 mA ESP-NOW bursts do not fit in 0.3 A of headroom, and a BEC
+  thermal cutout would kill the failsafe brain, so logic gets its own
+  converter straight off the pack. Only GND is shared.
+- **Never parallel two 5 V sources.** If a dedicated servo BEC is ever added
+  (bigger servos, flaps, retracts), the ESC's red wire must come out of its
+  connector first — two regulators tied together push current into each other.
+  Signal and ground only; the ESC still needs GND as its PWM reference.
+- **Camera + VTX run directly off the pack — a buck was tried and measured
+  worse.** An earlier revision of this section planned a Mini-360 at ~7.5 V
+  to relieve what was assumed to be linear-regulator heat inside the VTX,
+  plus an LC filter against buck ripple in the analog video. Bench
+  measurement falsified both assumptions. The chain (camera + 200 mW VTX)
+  draws 312 mA at 12 V direct (≈3.7 W) but **350 mA from the battery when
+  fed through the buck at 7.5 V** — the VTX generates its internal rails
+  with *switching* regulators, so it is a constant-power load: lowering its
+  input voltage only raises its input current (≈0.5 A at 7.5 V), and the
+  buck's ~90 % efficiency is pure added loss (~0.45 W; the module runs warm
+  doing nothing useful). The VTX heatsink heat is RF power-amplifier
+  dissipation (PA efficiency ~25–35 %), independent of supply voltage — the
+  remedy is airflow over the heatsink, not a lower rail. The interference
+  fear didn't materialize either: full-throttle motor runs showed no visible
+  noise in the video, direct or via the buck (bench test — recheck after
+  installation in the airframe; if lines ever appear, the fix is an LC
+  filter, not a converter). A 2S tap stays rejected for the old reasons
+  (pack imbalance; 2S sags to 6.0–6.6 V near empty, below the VTX's 7 V
+  minimum) — but there is no longer any reason to want a lower voltage at
+  all. Diagnostic worth remembering: a load that *would* benefit from a
+  lower rail shows the opposite signature — battery current roughly
+  independent of voltage (constant current = linear regulator behind the
+  input).
 - **Sensors do not hang on the devkit's 3.3 V pin.** The devkit's AMS1117 is
   marginal (clone quality, ~1.1 V dropout) and the ESP32's 50 Hz ESP-NOW LR
   bursts pull 300–500 mA spikes through it; a separate low-dropout LDO
   (HT7833, ~0.3 V dropout) keeps the sensor rail clean — it rides through 5 V
   rail dips and keeps radio spikes out of the baro/vario data.
-- **Servos on their own 5 V converter, separate from logic.** Servo current
-  comes in ugly start/stall pulses that sag and pollute the rail; the ESP32
-  is the failsafe brain and a brownout in flight equals link loss. A shared
-  5 A rail does work (bulk 470–1000 µF at the converter, star wiring, thick
-  servo leads), but a second converter costs almost nothing and decouples the
-  ESP32 from servo transients completely — only GND is shared.
-- **Mini-360 (MP1584) modules** are fine for the video and logic rails
-  (real-world continuous limit ~1–1.5 A despite the "3 A" rating). Set the
-  trimmer under no load, verify with a meter before connecting anything, and
-  lock it with a drop of varnish — vibration can turn it. The servo rail
-  needs a real 3–5 A BEC once servos arrive.
+- **The "Mini-360" modules are MP2307, not MP1584** — verified 340 kHz
+  switching (MP1584 runs 500 kHz–1.5 MHz). Both chips ship under the same
+  module name and the specs get quoted interchangeably, so check the marking
+  on what actually arrives. With the video buck dropped, only the logic 5 V
+  rail uses one. (The MP2307 being *synchronous* — one predictable ripple
+  frequency instead of light-load pulse-skipping — mattered for the video
+  filter design; it's irrelevant on the logic rail.) Real-world continuous
+  limit is ~1–1.5 A despite the "3 A" print. Set the trimmer under no load,
+  verify with a meter before connecting anything, and lock it with a drop of
+  varnish — vibration can turn it.
 - The MS4525DO in the kit is the **DS5 (5 V) variant** — running it at 3.3 V
   is within absolute maximums but outside calibration spec (scale error);
   it stays on the 5 V rail with I2C pulled up to 3.3 V (open-drain, so safe
