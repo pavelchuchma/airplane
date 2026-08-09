@@ -1,7 +1,8 @@
 # Parts Overview
 
-Hardware components for the airplane project, ordered on AliExpress (Jul 19, 2026).
-One document per part with full specs, pinout and wiring notes.
+Hardware components for the airplane project — electronics ordered on AliExpress
+(Jul 19, 2026), airframe and ESC from rcprofi.cz. One document per part with
+full specs, pinout and wiring notes.
 
 | Part | Doc | What it does | Interface | Key facts |
 |---|---|---|---|---|
@@ -12,6 +13,8 @@ One document per part with full specs, pinout and wiring notes.
 | <img src="img/pca9685-servo-driver.jpg" width="120"> | [PCA9685 16-ch servo driver](pca9685-servo-driver.md) | Drives up to 16 servos over I2C | I2C @ 0x40 (default), VCC 3.3/5 V + separate V+ servo rail 5–6 V | 12-bit PWM, 50 Hz for servos; servo power from BEC, never from MCU |
 | <img src="img/fpv-58g-uvc-kit.jpg" width="120"> | [5.8G FPV kit (UVC RX + VTX + camera)](fpv-58g-uvc-kit.md) | Analog video downlink to Android phone | camera CVBS → VTX 5.8 GHz → UVC dongle (OTG) | 200 mW variant, 40CH, VTX 7–24 V; ~100 ms latency; EU limit 25 mW — HAM license needed |
 | <img src="img/mpu6050-gy521.jpg" width="120"> | [MPU-6050 6DOF IMU (GY-521)](mpu6050-gy521.md) — **currently wired in** | Gyro + accelerometer (no compass) | I2C @ 0x68 (AD0 → 0x69), VCC 3.3–5 V | 16-bit, onboard DMP quaternions; ⚠️ same 0x68 default as GY-91's MPU-9250 |
+| <img src="img/airframe-beta-v2-1400.jpg" width="120"> | [Beta V2 1400 M1 airframe (Pelikan)](airframe-beta-v2-1400.md) | The airplane — 1.42 m EPP trainer, RTF donor | 4 servos + brushless motor; stock RadioLink RC gets replaced by the ESP32 link | 142 cm span, 0.65–0.72 kg, 3S, C2623-1950 motor, 6×4" prop |
+| <img src="img/esc-ray-g2-r-20b.jpg" width="120"> | [RAY G2 R-20B 20 A brushless ESC](esc-ray-g2-r-20b.md) | Motor drive + 5 V servo power | PWM throttle in; BEC 5 V/2 A out | 20 A (25 A burst), 2–3S; **linear** BEC — servos only, never the ESP32; motor cut 2 s after PWM loss |
 
 ## Orders
 
@@ -43,7 +46,7 @@ Common ground for everything.
 
 ## Power distribution (3S Li-ion pack)
 
-Pack: 3S Li-ion, 9.0–12.6 V (nominal ~10.8 V). Three branches, buck (switching) converters only — no linear regulators from pack voltage (a linear reg from 11 V to 5 V wastes ~55% as heat; a buck is 90%+ efficient).
+Pack: 3S Li-ion, 9.0–12.6 V (nominal ~10.8 V). Buck (switching) converters for the 5 V rails — no linear regulators from pack voltage (a linear reg from 11 V to 5 V wastes ~55% as heat; a buck is 90%+ efficient). The video chain takes pack voltage directly (see below).
 
 ```
 3S Li-ion (9–12.6 V)
@@ -51,8 +54,8 @@ Pack: 3S Li-ion, 9.0–12.6 V (nominal ~10.8 V). Three branches, buck (switching
  ├── BUCK A — PSM module (e.g. iFlight BLITZ PSM BXN, 2–8S in, 5V/2A + 12V/3A out)
  │     ├─ 5 V/2 A  → ESP32 (VIN pin), MS4525DO, GY-91, MPU-6050, GPS, PCA9685 VCC
  │     │             (electronics peak ~0.6 A → plenty of headroom)
- │     └─ 12 V/3 A → FPV VTX + camera (regulated & filtered — cleaner video than
- │                   direct pack, no brightness sag as the battery drains)
+ │     (PSM 12 V rail unused — VTX + camera go direct from the pack; measured:
+ │      any converter in front of them *raises* battery draw, see below)
  │
  └── BUCK B — servo UBEC 5–6 V / ≥5 A (e.g. Hobbywing/Matek 5A class)
        └─ PCA9685 V+ screw terminal (+ 470–1000 µF electrolytic on V+/GND)
@@ -63,15 +66,15 @@ Pack: 3S Li-ion, 9.0–12.6 V (nominal ~10.8 V). Three branches, buck (switching
 | Branch | Load | Peak current | Converter |
 |---|---|---|---|
 | Electronics 5 V | ESP32 + all sensors + PCA9685 logic | ~0.6 A | PSM 5 V/2 A |
-| Video | VTX 200 mW + camera | ~0.3 A | PSM 12 V/3 A |
+| Video | VTX 200 mW + camera | 312 mA @ 12 V (measured) | direct from pack |
 | Servos | PCA9685 V+ | **~1 A per loaded 9g servo**, more at stall (4 servos → budget 4–5 A) | dedicated UBEC ≥5 A |
 
 - **Servos must have their own converter** — a servo stall transient on a shared rail brown-outs the ESP32.
 - **Never feed pack voltage (11 V) into ESP32 VIN** — the onboard AMS1117 would dissipate >1 W and thermally shut down. Always go through a 5 V buck first.
 - Common ground for all branches, star topology from the pack.
 - UVC FPV receiver is ground-side (powered by the phone) — nothing needed onboard.
-- Verify whether the PSM's 12 V rail is buck-only: with 3S input (mostly <12 V) it will track below 12 V. VTX (7–24 V) and camera (5–40 V) don't care, but don't expect a flat 12 V.
-- If video shows switching-noise bands, add an LC filter (~100 µH + 470 µF) in front of the VTX.
+- VTX + camera are a **constant-power load** (internal switching regulators) — measured 312 mA @ 12 V direct vs 350 mA through a Mini-360 at 7.5 V, i.e. a step-down converter only adds its own loss and heat. Power them straight from the pack; VTX heatsink heat is RF PA dissipation and needs airflow, not a lower voltage. Details in `architecture.md` (Power architecture).
+- Full-throttle motor showed no video interference with direct pack feed (bench test). If noise bands ever appear after airframe installation, the fix is an LC filter (~100 µH + 470 µF) in front of the VTX — not a converter.
 
 ### Battery monitoring
 
