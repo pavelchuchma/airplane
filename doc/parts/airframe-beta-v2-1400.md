@@ -33,8 +33,8 @@
 |---|---|
 | Servos | 4 — 2 in the fuselage (rudder, elevator), 2 in the wing (ailerons) |
 | Functions | rudder, elevator, ailerons, throttle |
-| Transmitter | RadioLink T8FB BT, 2.4 GHz FHSS, 8ch, Mode 1 — **replaced by this project's ESP-NOW link** |
-| Receiver | RadioLink R8EF 8ch — **replaced by the air-side ESP32** |
+| Transmitter | [RadioLink T8FB BT](rc-tx-radiolink-t8fb.md), 2.4 GHz FHSS, 8ch, Mode 1 — **replaced by this project's ESP-NOW link** |
+| Receiver | [RadioLink R8EF](rc-rx-radiolink-r8ef.md) 8ch — **replaced by the air-side ESP32** |
 
 ## Project notes
 
