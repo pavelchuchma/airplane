@@ -140,8 +140,26 @@ decisions. Keep it updated when the design evolves.
   `baro AMSL − terrain(GPS position)`. QGC gets the calibrated altitude too
   (ALTITUDE.altitude_amsl + GLOBAL_POSITION_INT.alt); raw GPS altitude stays
   in GPS_RAW_INT.
-- Next steps: joystick input in cocpitView (the command channels are already
-  on the wire, neutral for now); servos + a real failsafe action on the air
-  side; course-over-ground yaw correction above a groundspeed threshold;
-  mount the pitot on the wing and calibrate its position error in flight
-  (check the static holes are not blocked first).
+- Per-cell battery monitoring is implemented (protocol v4, 90 B telemetry):
+  `src/air/battery.cpp` reads the 3S balance nodes via ADC1 dividers
+  (C1 10k/10k → GPIO35, C2 28k/10k → GPIO34, C3 56k/10k → GPIO39, 100 nF per
+  pin, all under the 11 dB linear ceiling) at 10 Hz in `sensorTask`,
+  64-sample average per node, cells by subtraction, plausibility
+  2.5–4.35 V/cell. Battery has its own `SensorLifecycle` (not in the
+  bus-rescue list — it isn't I2C): "present" means the balance lead was
+  plugged at boot; telemetry carries `cellMv[3]` guarded by
+  `TELEM_FLAG_BATT_OK`. cocpitView sends MAVLink `BATTERY_STATUS` (per-cell
+  mV, 2 Hz, skipped while the flag is down → QGC + HUD hide it) and the HUD
+  shows `BAT 11.4 3.80/3.79/3.81 Δ20` bottom-right (LNK moved one line up);
+  a cell < 3.2 V or Δ > 150 mV blinks the line at 2 Hz. The emulator feeds a
+  fake draining pack. The divider harness is built and verified end-to-end;
+  `battery.cpp` carries a one-point scale calibration (2026-08-23, full pack
+  vs multimeter — channels read 2-2.7 % high on nominal ratios). NOT done:
+  the second calibration point on a near-empty pack (offsets; plan:
+  `doc/plans/2026-08-10-battery-cell-monitoring.md`).
+- Next steps: second battery calibration point; joystick input in
+  cocpitView (the command channels are already on the wire, neutral for
+  now); servos + a real failsafe action on the air side; course-over-ground
+  yaw correction above a groundspeed threshold; mount the pitot on the wing
+  and calibrate its position error in flight (check the static holes are not
+  blocked first).

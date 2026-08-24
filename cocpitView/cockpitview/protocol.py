@@ -13,7 +13,7 @@ Frame layout on the ground bridge's serial link:
 import collections
 import struct
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 MSG_TELEMETRY = 0x01
 MSG_COMMAND = 0x02
@@ -25,13 +25,14 @@ TELEM_FLAG_VERSION_MISMATCH = 1 << 2
 TELEM_FLAG_BARO_OK = 1 << 3
 TELEM_FLAG_PITOT_OK = 1 << 4
 TELEM_FLAG_IMU_OK = 1 << 5  # clear = attitude fields are frozen/stale
+TELEM_FLAG_BATT_OK = 1 << 6  # cell*_mv valid (balance lead present + plausible)
 
 COMMAND_CHANNELS = 8
 NEUTRAL_CHANNELS = (0,) * COMMAND_CHANNELS  # surfaces neutral, throttle idle
 
-_TELEMETRY = struct.Struct("<BBBBI10f2i6fbBBB")
+_TELEMETRY = struct.Struct("<BBBBI10f2i6fbBBB3H")
 _COMMAND = struct.Struct("<BBBB8h")
-assert _TELEMETRY.size == 84, "telemetry layout drifted from messages.h"
+assert _TELEMETRY.size == 90, "telemetry layout drifted from messages.h"
 assert _COMMAND.size == 20, "command layout drifted from messages.h"
 
 Telemetry = collections.namedtuple(
@@ -40,7 +41,8 @@ Telemetry = collections.namedtuple(
     "roll pitch yaw rollspeed pitchspeed yawspeed baro_alt_m climb_mps "
     "diff_press_pa ias_mps "
     "lat1e7 lon1e7 alt_msl_m gs_mps cog_deg hdop hacc_m vacc_m "
-    "rssi_dbm cmd_loss_pct tx_fail_pct last_cmd_version",
+    "rssi_dbm cmd_loss_pct tx_fail_pct last_cmd_version "
+    "cell1_mv cell2_mv cell3_mv",
 )
 
 TELEMETRY_SIZE = _TELEMETRY.size

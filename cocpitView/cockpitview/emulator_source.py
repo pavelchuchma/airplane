@@ -18,6 +18,7 @@ from . import quaternion as quat
 from .telemetry import heartbeat
 
 HEARTBEAT_PERIOD_S = 1.0
+BATTERY_PERIOD_S = 0.5
 RATE_SAMPLE_DT = 0.005  # [s] for numerically differentiating angular rate
 
 
@@ -112,10 +113,30 @@ class EmulatorSource:
             )
         )
 
+    def _publish_battery(self, t):
+        # 3S pack sagging slowly from 3.85 V/cell, with a small fixed
+        # imbalance so the HUD's delta readout shows something nonzero
+        base = max(3.2, 3.85 - t * 0.001)
+        voltages = [int(base * 1000), int(base * 1000) - 20, int(base * 1000) + 10] + [65535] * 7
+        self._hub.publish(
+            self._hub.mav.battery_status_encode(
+                0,
+                mavutil.mavlink.MAV_BATTERY_FUNCTION_ALL,
+                mavutil.mavlink.MAV_BATTERY_TYPE_LION,
+                32767,  # temperature - not modeled
+                voltages,
+                -1,
+                -1,
+                -1,
+                -1,
+            )
+        )
+
     def _run(self):
         tick_period = 1.0 / self._rate
         start = time.monotonic()
         last_heartbeat = 0.0
+        last_battery = 0.0
         last_print_phase = None
 
         while True:
@@ -125,6 +146,10 @@ class EmulatorSource:
             if now - last_heartbeat >= HEARTBEAT_PERIOD_S:
                 self._hub.publish(heartbeat(self._hub.mav))
                 last_heartbeat = now
+
+            if now - last_battery >= BATTERY_PERIOD_S:
+                self._publish_battery(t)
+                last_battery = now
 
             roll, pitch, yaw, rollspeed, pitchspeed, yawspeed = attitude_at(t)
             time_boot_ms = int(t * 1000) & 0xFFFFFFFF

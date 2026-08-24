@@ -21,6 +21,11 @@ GREEN = (0, 255, 65)
 BLACK = (0, 0, 0)
 HALO = 1  # extra half-width of the black underlay
 
+# Battery alarm thresholds (doc/plans/2026-08-10-battery-cell-monitoring.md):
+# any cell sagging below the floor, or the pack going out of balance.
+CELL_FLOOR_V = 3.2
+CELL_DELTA_ALARM_V = 0.15
+
 
 def wrap180(deg):
     return (deg + 180.0) % 360.0 - 180.0
@@ -302,13 +307,32 @@ class Hud:
     def draw_link_status(self, surface, link):
         """ESP-NOW link quality, e.g. "LNK -72 U2% D0%" (air-side RSSI in
         dBm, Uplink command loss measured at the air side, Downlink
-        telemetry loss measured PC-side), in the very bottom-right screen
-        corner; hidden when the source reports no link stats at all."""
+        telemetry loss measured PC-side), bottom-right corner one line above
+        the BAT line; hidden when the source reports no link stats at all."""
         if link is None:
             return
         rssi_dbm, cmd_loss_pct, telem_loss_pct = link
         rssi = "---" if rssi_dbm is None else f"{rssi_dbm:d}"
         text = f"LNK {rssi} U{cmd_loss_pct:d}% D{telem_loss_pct:d}%"
+        self._text(surface, text, (self.w - 8, self.h - 6 - self.font.get_height()), anchor="bottomright")
+
+    # ----------------------------------------------------- battery status
+
+    def draw_battery_status(self, surface, cells_v):
+        """Pack + per-cell voltages, e.g. "BAT 11.4 3.80/3.79/3.81 D20"
+        (D = max cell difference in mV), in the very bottom-right screen
+        corner under the LNK line; hidden while the air side reports the
+        battery sense dead/absent. A cell below the floor or a pack out of
+        balance blinks the whole line at 2 Hz (the HUD is monochrome -
+        blinking is the FAILSAFE idiom for "act now")."""
+        if not cells_v:
+            return
+        alarm = min(cells_v) < CELL_FLOOR_V or max(cells_v) - min(cells_v) > CELL_DELTA_ALARM_V
+        if alarm and int(self.blink * 2) % 2 == 1:
+            return
+        delta_mv = round((max(cells_v) - min(cells_v)) * 1000)
+        per_cell = "/".join(f"{v:.2f}" for v in cells_v)
+        text = f"BAT {sum(cells_v):.1f} {per_cell} \u0394{delta_mv:d}"
         self._text(surface, text, (self.w - 8, self.h - 6), anchor="bottomright")
 
     # ------------------------------------------------------ roll indicator
@@ -378,3 +402,4 @@ class Hud:
         self._text(surface, "NAV", (self.w * 0.11, self.h * 0.88), anchor="midleft")
         self.draw_gps_status(surface, snap.gps_status)
         self.draw_link_status(surface, snap.link_status)
+        self.draw_battery_status(surface, snap.battery_cells_v)

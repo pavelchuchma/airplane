@@ -47,6 +47,9 @@
  *   pull-ups; the sensor is a 5 V part with open-drain I2C - safe)
  * Wiring GPS -> ESP32:
  *   VCC -> 5V, GND -> GND, TX -> GPIO16, RX -> GPIO17, PPS + EN unconnected
+ * Wiring battery balance lead -> ESP32 (dividers, see battery.h):
+ *   C1 -> 10k -> GPIO35, C2 -> 28k -> GPIO34, C3 -> 56k -> GPIO39,
+ *   10k + 100 nF from each pin to GND, B- -> GND (star ground)
  *
  * Assumes the module lies flat with its X axis pointing forward and Z axis
  * pointing up - depending on how it's actually mounted on the airframe you
@@ -58,6 +61,7 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 
+#include "battery.h"
 #include "bmp280.h"
 #include "espnow_link.h"
 #include "gps.h"
@@ -88,6 +92,13 @@ constexpr int kPitotZeroSamples = 50;           // 1 s average defining pressure
 constexpr float kAirspeedTimeConstant = 0.3f;   // [s] differential-pressure low-pass
 constexpr uint32_t kPitotDeadAfterUs = 500000;  // 0.5 s without a good read = sensor dead
 
+constexpr uint32_t kBattIntervalUs = 100000;  // 10 Hz - plenty for an alarm signal
+constexpr uint32_t kBattDeadAfterUs = 1000000;  // 1 s of implausible reads = lead gone
+// Plausibility band per cell: below = disconnected balance lead (all nodes
+// read near 0) or a cell too dead to measure; above = not a Li-ion cell.
+constexpr uint16_t kCellMinMv = 2500;
+constexpr uint16_t kCellMaxMv = 4350;
+
 constexpr int kRecoveryStreak = 10;          // consecutive good reads reviving a dead sensor
 constexpr uint32_t kProbeIntervalMs = 2000;  // dead-sensor probe cadence (failed probes are slow)
 constexpr uint32_t kBusRescueAfterUs = 2000000;  // nothing good on the bus this long -> rescue
@@ -115,6 +126,8 @@ float climbRate = NAN;
 float pitotZeroPa = 0.0f;
 float diffPressPa = NAN;  // zero-corrected + low-pass filtered
 float iasMps = NAN;
+
+uint16_t cellMv[3] = {0, 0, 0};  // per-cell [mV], 0 = unknown
 
 // One lifecycle for all three I2C sensors. The only failure mode designed
 // for is a temporary bus disturbance: transactions fail (slowly - see the
@@ -176,6 +189,10 @@ struct SensorLifecycle {
 SensorLifecycle imuLc("MPU-6500", kImuDeadAfterUs);
 SensorLifecycle baroLc("BMP280", kBaroDeadAfterUs);
 SensorLifecycle pitotLc("MS4525DO", kPitotDeadAfterUs);
+// Not an I2C device (and deliberately absent from tryBusRescue's list): the
+// on-chip ADC can't die, so present/ok track the *balance lead* being
+// connected and the readings staying inside the plausibility band.
+SensorLifecycle battLc("battery", kBattDeadAfterUs);
 
 // The sensor task publishes here, loop() copies under sensorMux. Defaults
 // are what telemetry reports until the first sample lands (the link is
@@ -189,9 +206,11 @@ struct SensorSnapshot {
   float climbMps = NAN;
   float diffPressPa = NAN;
   float iasMps = NAN;
+  uint16_t cellMv[3] = {0, 0, 0};
   bool baroOk = false;
   bool pitotOk = false;
   bool imuOk = false;  // clear = roll/pitch/yaw frozen at the last good sample
+  bool battOk = false;
   uint32_t snapshotUs = 0;  // micros() at publish time
 };
 portMUX_TYPE sensorMux = portMUX_INITIALIZER_UNLOCKED;
@@ -505,6 +524,36 @@ void updatePitot(uint32_t nowUs, uint32_t nowMs) {
   iasMps = sqrtf(2.0f * max(diffPressPa, 0.0f) / kAirDensity);
 }
 
+// Reads the three balance nodes at 10 Hz and publishes the subtracted cell
+// voltages. "good" = every cell inside the plausibility band - a pulled
+// balance lead reads ~0 mV on all nodes and kills all three at once, a
+// single corrupted conversion can't (the 64-sample average already ate it).
+// kBattDeadAfterUs of implausible reads = fields to 0 and TELEM_FLAG_BATT_OK
+// drops; the lifecycle revives it (with the same boot calibration constants)
+// if the lead comes back.
+void updateBattery(uint32_t nowUs, uint32_t nowMs) {
+  static uint32_t lastAttemptUs = 0;
+  if (!battLc.shouldAttempt(nowMs) || nowUs - lastAttemptUs < kBattIntervalUs) {
+    return;
+  }
+  lastAttemptUs = nowUs;
+
+  uint16_t mv[3];
+  battery::read(mv);
+  bool good = true;
+  for (uint16_t v : mv) {
+    good = good && v >= kCellMinMv && v <= kCellMaxMv;
+  }
+  bool wasOk = battLc.ok;
+  if (!battLc.onResult(good, nowUs, nowMs)) {
+    if (wasOk && !battLc.ok) {
+      cellMv[0] = cellMv[1] = cellMv[2] = 0;
+    }
+    return;
+  }
+  memcpy(cellMv, mv, sizeof(cellMv));
+}
+
 // Boot presence probes: a few normal data reads - cheap, retried against a
 // bus that may still be settling, and the only operation every sensor is
 // guaranteed to support (the MS4525DO has no registers at all; the old
@@ -540,6 +589,24 @@ bool probeBaro() {
   // here, at boot. The config survives any bus disturbance.
   for (int i = 0; i < 3; i++) {
     if (bmp280::begin()) {
+      return true;
+    }
+    delay(10);
+  }
+  return false;
+}
+
+// The ADC itself always answers - this probes the *balance lead*. In flight
+// the pack powers the ESP32, so the lead is there from boot; on the USB
+// bench there is no pack and battery reports absent, like any other missing
+// sensor. Same present-is-decided-once model: the lead connects together
+// with the pack, never later.
+bool probeBattery() {
+  for (int i = 0; i < 3; i++) {
+    uint16_t mv[3];
+    battery::read(mv);
+    if (mv[0] >= kCellMinMv && mv[0] <= kCellMaxMv && mv[1] >= kCellMinMv &&
+        mv[1] <= kCellMaxMv && mv[2] >= kCellMinMv && mv[2] <= kCellMaxMv) {
       return true;
     }
     delay(10);
@@ -596,6 +663,8 @@ void sensorTask(void *) {
   imuLc.present = probeImu();
   baroLc.present = probeBaro();
   pitotLc.present = probePitot();
+  battery::begin();
+  battLc.present = probeBattery();
 
   // Boot calibrations, one retry each: a transient bus glitch during the
   // window must not cost the whole flight's data. A sensor whose
@@ -612,7 +681,7 @@ void sensorTask(void *) {
   }
 
   uint32_t bootUs = micros();
-  for (SensorLifecycle *lc : {&imuLc, &baroLc, &pitotLc}) {
+  for (SensorLifecycle *lc : {&imuLc, &baroLc, &pitotLc, &battLc}) {
     if (lc->present) {
       lc->ok = true;
       lc->lastGoodUs = bootUs;
@@ -630,6 +699,7 @@ void sensorTask(void *) {
 
     updateBaro(now, nowMs);
     updatePitot(now, nowMs);
+    updateBattery(now, nowMs);
 
     float gx = 0.0f, gy = 0.0f, gz = 0.0f;  // body rates, zero while the IMU is out
     if (imuLc.shouldAttempt(nowMs)) {
@@ -682,9 +752,11 @@ void sensorTask(void *) {
     sensorShared.climbMps = climbRate;
     sensorShared.diffPressPa = diffPressPa;
     sensorShared.iasMps = iasMps;
+    memcpy(sensorShared.cellMv, cellMv, sizeof(cellMv));
     sensorShared.baroOk = baroLc.ok;
     sensorShared.pitotOk = pitotLc.ok;
     sensorShared.imuOk = imuLc.ok;
+    sensorShared.battOk = battLc.ok;
     sensorShared.snapshotUs = now;
     portEXIT_CRITICAL(&sensorMux);
   }
@@ -780,7 +852,7 @@ void loop() {
   // flags. A single ~1 s stalled transaction blanks all three for its
   // duration - honest, the data in the snapshot really is that old.
   if (now - s.snapshotUs > kSnapshotStaleUs) {
-    s.baroOk = s.pitotOk = s.imuOk = false;
+    s.baroOk = s.pitotOk = s.imuOk = s.battOk = false;
   }
 
   gps::Fix f = gps::fix();
@@ -790,7 +862,8 @@ void loop() {
   t.version = PROTOCOL_VERSION;
   t.flags = (f.valid ? TELEM_FLAG_GPS_FIX : 0) | (failsafe ? TELEM_FLAG_FAILSAFE : 0) |
             (mismatch ? TELEM_FLAG_VERSION_MISMATCH : 0) | (s.baroOk ? TELEM_FLAG_BARO_OK : 0) |
-            (s.pitotOk ? TELEM_FLAG_PITOT_OK : 0) | (s.imuOk ? TELEM_FLAG_IMU_OK : 0);
+            (s.pitotOk ? TELEM_FLAG_PITOT_OK : 0) | (s.imuOk ? TELEM_FLAG_IMU_OK : 0) |
+            (s.battOk ? TELEM_FLAG_BATT_OK : 0);
   t.sats = f.sats;
   t.timeBootMs = nowMs;
   t.rollRad = s.roll;
@@ -817,6 +890,7 @@ void loop() {
   t.cmdLossPct = cmdLossPct;
   t.txFailPct = txFailPct;
   t.lastCmdVersion = cmdVersion;
+  memcpy(t.cellMv, s.cellMv, sizeof(t.cellMv));
 
   esp_now_send(peerMac, (const uint8_t *)&t, sizeof(t));
 }

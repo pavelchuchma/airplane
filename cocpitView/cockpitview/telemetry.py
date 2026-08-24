@@ -59,6 +59,10 @@ class TelemetrySnapshot:
     gps_hacc_m: float | None = None  # 1-sigma horizontal error [m]
     gps_ts: float = field(default=-math.inf)
 
+    # BATTERY_STATUS (per-cell voltages [mV], 65535 = cell slot unused)
+    batt_cells_mv: tuple = ()
+    batt_ts: float = field(default=-math.inf)
+
     # ALTITUDE message
     alt_relative_m: float = 0.0
     alt_ts: float = field(default=-math.inf)
@@ -183,6 +187,15 @@ class TelemetrySnapshot:
         return (self.link_rssi_dbm, self.link_cmd_loss_pct, self.link_telem_loss_pct)
 
     @property
+    def battery_cells_v(self):
+        """Per-cell voltages in volts from BATTERY_STATUS, or None when the
+        source never sent one / the air side reports the sense dead (it stops
+        publishing, so the timestamp goes stale within a second)."""
+        if not self._fresh(self.batt_ts) or not self.batt_cells_mv:
+            return None
+        return tuple(mv / 1000.0 for mv in self.batt_cells_mv)
+
+    @property
     def failsafe(self):
         """True while the air side reports its command-loss failsafe."""
         return self._fresh(self.link_ts) and self.failsafe_active
@@ -228,6 +241,9 @@ def apply_message(s, msg, now):
         if not math.isnan(msg.altitude_amsl):
             s.alt_amsl_m = msg.altitude_amsl
             s.alt_amsl_ts = now
+    elif mtype == "BATTERY_STATUS":
+        s.batt_cells_mv = tuple(mv for mv in msg.voltages if mv != 65535)
+        s.batt_ts = now
     elif mtype == "HEARTBEAT":
         s.heartbeat_ts = now
 

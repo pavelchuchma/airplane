@@ -7,7 +7,9 @@ baud, see protocol.py):
   - down: TelemetryMessage from the air board, 50 Hz. Published to the
     TelemetryHub as MAVLink ATTITUDE + VFR_HUD + ALTITUDE + GPS_RAW_INT +
     GLOBAL_POSITION_INT (same set and scaling the retired CSV reader used)
-    plus a 1 Hz HEARTBEAT and a ~2 Hz RADIO_STATUS for QGC. Link stats
+    plus a 1 Hz HEARTBEAT, a ~2 Hz RADIO_STATUS and a ~2 Hz BATTERY_STATUS
+    (per-cell voltages; skipped while the air side reports the battery
+    sense dead - the HUD hides its BAT line, QGC shows stale) for QGC. Link stats
     (air-side RSSI/command loss, PC-side telemetry loss, the failsafe flag)
     additionally go straight into the HUD snapshot via hub.update_link().
   - up: CommandMessage at a fixed 50 Hz - neutral channels for now (no
@@ -46,6 +48,7 @@ HEARTBEAT_PERIOD_S = 1.0
 RETRY_PERIOD_S = 3.0
 COMMAND_PERIOD_S = 0.02  # fixed 50 Hz, silence = link loss on the air side
 RADIO_STATUS_PERIOD_S = 0.5
+BATTERY_STATUS_PERIOD_S = 0.5
 STATS_WINDOW_S = 1.0
 TELEMETRY_RATE_HZ = 50.0
 
@@ -73,6 +76,7 @@ class EspNowSource:
         self._mismatch_warned = False
         self._telem_lost_total = 0  # cumulative, for RADIO_STATUS.rxerrors
         self._failsafe = None  # last seen air-side failsafe state (None = unknown)
+        self._last_battery_status = 0.0
 
     def start(self):
         self._thread.start()
@@ -169,6 +173,10 @@ class EspNowSource:
                 if now - last_radio_status >= RADIO_STATUS_PERIOD_S:
                     self._publish_radio_status(t)
                     last_radio_status = now
+
+                if now - self._last_battery_status >= BATTERY_STATUS_PERIOD_S:
+                    self._publish_battery(t)
+                    self._last_battery_status = now
 
     def _publish_telemetry(self, t, elapsed, telem_loss_pct):
         time_boot_ms = int(elapsed * 1000) & 0xFFFFFFFF
@@ -289,6 +297,28 @@ class EspNowSource:
                 vy,
                 0 if math.isnan(t.climb_mps) else int(-t.climb_mps * 100),
                 int(t.cog_deg * 100) % 36000 if moving else 65535,
+            )
+        )
+
+    def _publish_battery(self, t):
+        """BATTERY_STATUS with the three per-cell voltages (mV; QGC renders
+        them individually). Not published while the air side reports the
+        battery sense dead/absent - the HUD's batt_ts goes stale and the BAT
+        line disappears, mirroring how a dead IMU stops ATTITUDE."""
+        if not t.flags & protocol.TELEM_FLAG_BATT_OK:
+            return
+        voltages = [t.cell1_mv, t.cell2_mv, t.cell3_mv] + [65535] * 7  # 65535 = cell unused
+        self._hub.publish(
+            self._hub.mav.battery_status_encode(
+                0,  # id
+                mavutil.mavlink.MAV_BATTERY_FUNCTION_ALL,
+                mavutil.mavlink.MAV_BATTERY_TYPE_LION,
+                32767,  # temperature [cdegC], INT16_MAX = not measured
+                voltages,
+                -1,  # current_battery - not measured
+                -1,  # current_consumed
+                -1,  # energy_consumed
+                -1,  # battery_remaining [%] - voltage is a poor fuel gauge, don't fake one
             )
         )
 

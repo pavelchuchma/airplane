@@ -80,7 +80,20 @@ Pack: 3S Li-ion, 9.0–12.6 V (nominal ~10.8 V). Buck (switching) converters for
 
 ### Battery monitoring
 
-Voltage divider from pack to an ESP32 ADC1 pin, e.g. 47 kΩ / 15 kΩ → 12.6 V max ≈ 3.05 V at GPIO34. Li-ion discharge curve is flat — watch the hard floor of ~3.0 V/cell (9.0 V pack) rather than percentage estimates.
+**Per-cell** monitoring via the balance connector is implemented in firmware
+(`esp32/src/air/battery.cpp`, plan + full divider analysis in
+`doc/plans/2026-08-10-battery-cell-monitoring.md`): three dividers from the
+3S balance leads to ADC1 input-only pins — C1 10k/10k → GPIO35, C2 28k/10k
+→ GPIO34, C3 56k/10k → GPIO39, 100 nF at each pin, all nodes under the 11 dB
+attenuation's ~2.45 V linear ceiling. Cells come from subtracting the
+cumulative node voltages; telemetry carries `cellMv[3]` + `TELEM_FLAG_BATT_OK`
+and the HUD shows a `BAT` line bottom-right. Li-ion discharge curve is flat —
+the actionable signals are the hard floor of ~3.0 V/cell and a cell diverging
+from its siblings (HUD blinks below 3.2 V/cell or Δ > 150 mV). The sense
+harness (Y-tap off the balance lead) is built and verified end-to-end; the
+per-channel constants in `battery.cpp` carry a one-point scale calibration
+(full pack vs multimeter, 2026-08-23) and zero offsets — the second point on
+a near-empty pack is still to be measured.
 
 ### Shopping list (not yet ordered)
 

@@ -6,7 +6,7 @@
 
 #include <stdint.h>
 
-constexpr uint8_t PROTOCOL_VERSION = 3;
+constexpr uint8_t PROTOCOL_VERSION = 4;
 
 // Both radios must sit on the same channel; set explicitly at bring-up.
 constexpr uint8_t WIFI_CHANNEL = 1;
@@ -21,6 +21,7 @@ constexpr uint8_t TELEM_FLAG_VERSION_MISMATCH = 1 << 2;  // last command had wro
 constexpr uint8_t TELEM_FLAG_BARO_OK = 1 << 3;
 constexpr uint8_t TELEM_FLAG_PITOT_OK = 1 << 4;
 constexpr uint8_t TELEM_FLAG_IMU_OK = 1 << 5;  // clear = attitude fields are frozen/stale
+constexpr uint8_t TELEM_FLAG_BATT_OK = 1 << 6;  // cellMv valid (balance lead present + plausible)
 
 // Air -> PC, 50 Hz. GPS fields repeat between the 5 Hz GPS updates; floats
 // keep the NAN-as-invalid convention of gps::Fix (survives struct.unpack).
@@ -43,8 +44,9 @@ struct __attribute__((packed)) TelemetryMessage {
   uint8_t cmdLossPct;                  // % of expected command frames missed, last 1 s window
   uint8_t txFailPct;                   // % of telemetry esp_now_send without ACK, last 1 s
   uint8_t lastCmdVersion;              // version byte of the last received command, 0 = none
+  uint16_t cellMv[3];                  // per-cell voltage [mV], valid iff TELEM_FLAG_BATT_OK
 };
-static_assert(sizeof(TelemetryMessage) == 84, "wire format changed - bump PROTOCOL_VERSION");
+static_assert(sizeof(TelemetryMessage) == 90, "wire format changed - bump PROTOCOL_VERSION");
 
 constexpr uint8_t COMMAND_CHANNELS = 8;
 

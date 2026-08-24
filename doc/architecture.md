@@ -131,7 +131,9 @@ yaw correction (above a groundspeed threshold).
 ## Power architecture (airplane, planned)
 
 Source: **3S Li-ion pack** (9.0–12.6 V). All rails share a common ground,
-wired star-style from the converter outputs.
+wired star-style from the converter outputs. Per-cell voltages are monitored
+from the balance connector via ADC1 dividers (see `doc/parts/README.md`,
+Battery monitoring).
 
 ```
 3S Li-ion (9.0–12.6 V)
@@ -237,8 +239,8 @@ Reasoning behind the choices:
   - ESP32 long-range mode (`WIFI_PROTOCOL_LR`) is enabled — the default
     ESP-NOW range is marginal for flying.
 - **Chosen link parameters** (see `lib/protocol/`):
-  - one combined 84 B `TelemetryMessage` at 50 Hz (GPS fields simply repeat
-    between the 5 Hz GPS updates) — ~4.2 kB/s, comfortable even at the LR
+  - one combined 90 B `TelemetryMessage` at 50 Hz (GPS fields simply repeat
+    between the 5 Hz GPS updates) — ~4.5 kB/s, comfortable even at the LR
     mode's reduced bitrate, and one parse path instead of two;
   - serial framing `COBS(payload‖CRC-16/CCITT-FALSE) + 0x00` — fixed +1 B
     COBS overhead and trivial resync on the delimiter; the ground UART runs
