@@ -21,6 +21,11 @@ decisions. Keep it updated when the design evolves.
 ## Commands
 
 - Firmware build/upload: `cd esp32 && pio run -e air -t upload` (or `-e ground`)
+- Flashing the air board is done over USB with the board mounted in the
+  airplane, so **disconnect the flight battery first** — USB power and the
+  battery/BEC must never be live at the same time. Booting like that prints
+  `# battery absent - data nan for this flight` (the balance lead is off with
+  the pack); that is the expected USB-powered state, not a regression.
 - Both devkits have clone CP2102s with the same USB serial number; boards are
   identified by their factory MAC (`custom_board_mac` in platformio.ini,
   probed via ROM bootloader — see `esp32/tools/board_id.py`). Boards may be
@@ -54,7 +59,20 @@ decisions. Keep it updated when the design evolves.
 - The sensor board is a GY-91, but its IMU is an
   MPU-6500 (verified via WHO_AM_I = 0x70 and no AK8963 at 0x0C) — a fake
   "MPU-9250", so there is **no magnetometer**. Yaw drifts; the plan is GPS
-  course-over-ground correction, not a compass. The BMP280 barometer is read
+  course-over-ground correction, not a compass. In the airframe the board is
+  mounted **upside down — rotated 180° about body X** (sensor X still
+  forward), so `mpuReadRaw()` negates the Y and Z accel/gyro counts into the
+  X-forward/Y-right/Z-up body frame (`kAxisSign`, applied at the driver so
+  the gyro bias calibration sees body frame too). `kAxisSign` must stay a
+  proper rotation (det +1): a mirror (Z alone was tried) puts gyro and accel
+  in opposite frames on one axis and the complementary filter degrades to
+  its slow accel path — seconds of rubbery HUD lag, seen on the airframe
+  2026-08-25 (pitch jerked the wrong way first, then crawled to the right
+  value — the inverted-gyro-Y signature). Level trim measured on the
+  airframe 2026-08-25 (`kRollTrimRad`/`kPitchTrimRad`, roll −0.52°, pitch
+  +0.09°, subtracted from the accel-derived angles): airplane held in ideal
+  level attitude reads roll/pitch 0.0.
+  The BMP280 barometer is read
   (`src/air/bmp280.cpp`): altitude relative to boot location +
   low-pass-filtered vario. I2C robustness: **all I2C access lives in a
   dedicated FreeRTOS task** (`sensorTask`, core 0) — the Arduino/IDF I2C

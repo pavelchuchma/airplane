@@ -51,9 +51,9 @@
  *   C1 -> 10k -> GPIO35, C2 -> 28k -> GPIO34, C3 -> 56k -> GPIO39,
  *   10k + 100 nF from each pin to GND, B- -> GND (star ground)
  *
- * Assumes the module lies flat with its X axis pointing forward and Z axis
- * pointing up - depending on how it's actually mounted on the airframe you
- * may need to swap/invert axes below.
+ * The attitude math works in a body frame with X forward, Y right and Z up.
+ * The GY-91 is mounted upside down in the airframe (180 deg about body X),
+ * so its readings are remapped in mpuReadRaw() per kAxisSign - see there.
  */
 
 #include <Arduino.h>
@@ -79,6 +79,24 @@ constexpr int kPinScl = 22;
 constexpr float kAccelScale = 1.0f / 16384.0f;        // LSB -> g, +-2g range
 constexpr float kGyroScale = (PI / 180.0f) / 131.0f;  // LSB -> rad/s, +-250 deg/s range
 constexpr float kComplementaryAlpha = 0.98f;          // gyro vs. accelerometer weight
+
+// Mounted orientation. The GY-91 sits in the airframe rotated 180 deg about
+// the body X axis (upside down, sensor X still forward), so Y and Z readings
+// (accel and gyro alike) are negated into the X-forward/Y-right/Z-up body
+// frame the attitude math below assumes. Applied inside mpuReadRaw(), i.e.
+// everything downstream - including the gyro bias calibration - already
+// works in body frame. The signs must stay a proper rotation (determinant
+// +1): a mirror (e.g. Z alone) puts gyro and accel in opposite frames on
+// one axis and the complementary filter degrades to its slow accel path -
+// seconds of rubbery lag, verified on the airframe 2026-08-25.
+constexpr int8_t kAxisSign[3] = {1, -1, -1};  // X, Y, Z: sensor -> body frame
+
+// Level trim: residual mounting misalignment of the board vs. the airframe,
+// measured 2026-08-25 with the airplane held in its ideal level attitude
+// (mean of 15 s of settled attitude, sd ~0.02 deg). Subtracted from the
+// accel-derived angles, so the filter converges to airframe-relative zero.
+constexpr float kRollTrimRad = -0.522f * PI / 180.0f;
+constexpr float kPitchTrimRad = 0.087f * PI / 180.0f;
 constexpr uint32_t kSampleIntervalUs = 20000;         // 50 Hz
 constexpr int kGyroCalibrationSamples = 200;
 constexpr uint32_t kImuDeadAfterUs = 500000;  // 0.5 s without a good read = IMU out
@@ -350,9 +368,20 @@ bool mpuWriteRegister(uint8_t reg, uint8_t value) {
   return Wire.endTransmission() == 0;
 }
 
-// False on I2C errors - without the check a dead bus reads as all 0xFF,
-// i.e. an accel vector (-1,-1,-1), and the complementary filter converges
-// to a bogus roll -135 / pitch +35 deg instead of freezing.
+// Sensor -> body frame per kAxisSign. Negation is safe for every count the
+// MPU produces except INT16_MIN, whose negative does not fit in an int16_t;
+// that one is clamped (it is the saturated end of the range anyway).
+int16_t toBodyFrame(int16_t raw, int axis) {
+  if (kAxisSign[axis] > 0) {
+    return raw;
+  }
+  return raw == INT16_MIN ? INT16_MAX : (int16_t)-raw;
+}
+
+// Returns body-frame counts. False on I2C errors - without the check a dead
+// bus reads as all 0xFF, i.e. an accel vector (-1,-1,-1), and the
+// complementary filter converges to a bogus roll -135 / pitch +35 deg
+// instead of freezing.
 bool mpuReadRaw(int16_t *accel, int16_t *gyro) {
   Wire.beginTransmission(kMpuAddress);
   Wire.write(kRegAccelStart);
@@ -371,6 +400,11 @@ bool mpuReadRaw(int16_t *accel, int16_t *gyro) {
   gyro[0] = (Wire.read() << 8) | Wire.read();
   gyro[1] = (Wire.read() << 8) | Wire.read();
   gyro[2] = (Wire.read() << 8) | Wire.read();
+
+  for (int i = 0; i < 3; i++) {
+    accel[i] = toBodyFrame(accel[i], i);
+    gyro[i] = toBodyFrame(gyro[i], i);
+  }
   return true;
 }
 
@@ -722,8 +756,8 @@ void sensorTask(void *) {
         gy = gyroRaw[1] * kGyroScale - gyroBiasY;
         gz = gyroRaw[2] * kGyroScale - gyroBiasZ;
 
-        float rollAccel = atan2f(ay, az);
-        float pitchAccel = atan2f(-ax, sqrtf(ay * ay + az * az));
+        float rollAccel = atan2f(ay, az) - kRollTrimRad;
+        float pitchAccel = atan2f(-ax, sqrtf(ay * ay + az * az)) - kPitchTrimRad;
 
         // dt spans back to the last good sample (capped), so the rotation
         // during a sub-threshold dropout is approximated by this sample's
