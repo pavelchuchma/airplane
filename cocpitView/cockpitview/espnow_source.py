@@ -12,9 +12,13 @@ baud, see protocol.py):
     sense dead - the HUD hides its BAT line, QGC shows stale) for QGC. Link stats
     (air-side RSSI/command loss, PC-side telemetry loss, the failsafe flag)
     additionally go straight into the HUD snapshot via hub.update_link().
+    Every payload the bridge delivers is handed to the FlightLog before any
+    filtering (flightlog.py), so the log records what arrived, not what we
+    understood.
   - up: CommandMessage at a fixed 50 Hz - neutral channels for now (no
     joystick yet); the fixed rate is the air side's link-loss detector, so
-    the sender runs whenever the port is open.
+    the sender runs whenever the port is open. Each sent payload goes to the
+    FlightLog too.
 
 By default the serial port is resolved by the ground board's factory MAC
 address (the boards' clone CP2102s share one USB serial number, so port
@@ -28,6 +32,7 @@ retrying and the HUD shows NO TELEMETRY.
 """
 
 import configparser
+import datetime
 import math
 import pathlib
 import sys
@@ -38,6 +43,7 @@ import serial
 from pymavlink import mavutil
 
 from . import protocol
+from .flightlog import FlightLog
 from .telemetry import heartbeat
 
 ESP32_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "esp32"
@@ -67,10 +73,11 @@ def find_ground_port():
 class EspNowSource:
     """Background threads bridging the ground board's serial link to the hub."""
 
-    def __init__(self, hub, port=None, baud=460800):
+    def __init__(self, hub, port=None, baud=460800, log=None):
         self._hub = hub
         self._port = port
         self._baud = baud
+        self._log = log if log is not None else FlightLog(None)
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._version_warned = False
         self._mismatch_warned = False
@@ -93,11 +100,13 @@ class EspNowSource:
                 self._pump(port)
             except (serial.SerialException, OSError) as err:
                 print(f"serial link lost ({err}) - reconnecting")
+                self._log.event("serial_lost", port=str(port), error=str(err))
                 time.sleep(RETRY_PERIOD_S)
 
     def _pump(self, port):
         with serial.Serial(port, self._baud, timeout=1.0) as ser:
             print(f"Reading ESP-NOW telemetry from the ground bridge at {port} @ {self._baud} baud")
+            self._log.event("serial_open", port=str(port), baud=self._baud)
             stop = threading.Event()
             # pyserial is safe with one reading + one writing thread per port;
             # the sender dies with the connection and restarts on reconnect.
@@ -118,10 +127,12 @@ class EspNowSource:
             next_send += COMMAND_PERIOD_S
             if stop.wait(max(0.0, next_send - time.monotonic())):
                 return
+            payload = protocol.encode_command(seq)
             try:
-                ser.write(protocol.encode_frame(protocol.encode_command(seq)))
+                ser.write(protocol.encode_frame(payload))
             except (serial.SerialException, OSError):
                 return  # the reader handles the reconnect
+            self._log.uplink(payload)
             seq = (seq + 1) & 0xFF
 
     def _read(self, ser):
@@ -134,7 +145,10 @@ class EspNowSource:
         telem_loss_pct = 0
 
         while True:
-            data = ser.read(256)
+            # return on the first byte, then drain: read(256) would block
+            # until 256 B (~2.5 frames) arrive and quantize `now` - and the
+            # logged timestamps - to ~50 ms batches
+            data = ser.read(max(1, ser.in_waiting))
             now = time.monotonic()
 
             if now - window_start >= STATS_WINDOW_S:
@@ -142,6 +156,16 @@ class EspNowSource:
                 lost = max(0, int(round(expected)) - window_count)
                 telem_loss_pct = min(100, int(round(lost * 100 / expected)))
                 self._telem_lost_total += lost
+                # 1 Hz liveness heartbeat for the log: proves the reader was
+                # alive during a telemetry gap; utc pairs the monotonic
+                # timestamps with video/GPS time even after a laptop sleep
+                self._log.event(
+                    "link_window",
+                    telem_loss_pct=telem_loss_pct,
+                    frames=window_count,
+                    splitter_dropped=splitter.dropped,
+                    utc=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds"),
+                )
                 window_start = now
                 window_count = 0
 
@@ -149,6 +173,7 @@ class EspNowSource:
                 continue  # timeout with no data, try again
 
             for payload in splitter.feed(data):
+                self._log.downlink(payload)  # before any filter: log what arrived
                 if payload[0] != protocol.MSG_TELEMETRY:
                     continue
                 if payload[1] != protocol.PROTOCOL_VERSION:

@@ -8,6 +8,14 @@ the Python-side counterpart of the static_asserts in messages.h.
 Frame layout on the ground bridge's serial link:
 
     frame = COBS(payload || crc16_be(payload)) || 0x00
+
+Two invariants the flight log (flightlog.py) relies on:
+
+  - msgId and version are the first two bytes of every message and never
+    move, so a logged frame's version is known without knowing its layout.
+  - Field names in Telemetry / Command are never renamed, only added. The
+    wire order may change (the struct format handles it); the names are the
+    API for analysis scripts and pandas columns across logs of all versions.
 """
 
 import collections
@@ -45,6 +53,10 @@ Telemetry = collections.namedtuple(
     "cell1_mv cell2_mv cell3_mv",
 )
 
+Command = collections.namedtuple(
+    "Command", "msg_id version flags seq " + " ".join(f"ch{i}" for i in range(COMMAND_CHANNELS))
+)
+
 TELEMETRY_SIZE = _TELEMETRY.size
 
 
@@ -53,6 +65,13 @@ def decode_telemetry(payload):
     if len(payload) != _TELEMETRY.size or payload[0] != MSG_TELEMETRY:
         return None
     return Telemetry._make(_TELEMETRY.unpack(payload))
+
+
+def decode_command(payload):
+    """Unpacks a MSG_COMMAND payload, or returns None when it isn't one."""
+    if len(payload) != _COMMAND.size or payload[0] != MSG_COMMAND:
+        return None
+    return Command._make(_COMMAND.unpack(payload))
 
 
 def encode_command(seq, channels=NEUTRAL_CHANNELS, flags=0):

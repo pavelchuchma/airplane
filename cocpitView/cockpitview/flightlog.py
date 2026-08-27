@@ -1,0 +1,441 @@
+"""Flight log - raw wire payloads plus PC-side events, one `.cvlog` per run.
+
+cocpitView logs what crosses the ground bridge's serial link, not the
+MAVLink it derives from it: every payload the bridge delivers (today the
+90 B TelemetryMessage, 50 Hz) and every command payload sent back (20 B,
+50 Hz). The MAVLink stream is lossy (NaN -> 0, integer scaling, messages
+suppressed while a sensor is dead, the altitude rewritten by the baro
+calibration) and fully derivable from these records; the reverse is not
+true. Design notes: doc/plans/2026-08-25-telemetry-logging.md.
+
+File format - a sequence of length-prefixed records:
+
+    record = "<dBH" (t_mono [s], type, len) || payload[len]
+
+    0x00 HEADER   JSON, first record: format, protocol version, the struct
+                  formats + field names + flag map of the messages, UTC
+                  start, git hash, CLI args. The file is self-describing:
+                  readers decode by the header, not by the current
+                  protocol.py, so old logs survive PROTOCOL_VERSION bumps.
+    0x01 DOWN     raw downlink payload as delivered by the bridge
+    0x02 UP       raw uplink payload as sent
+    0x03 EVENT    JSON {"ev": name, ...} - PC-side state that cannot be
+                  recomputed from the wire: baro_calibrated, the 1 Hz
+                  link_window liveness heartbeat, serial_open/serial_lost
+    0x04 MAVLINK  reserved, never written
+
+Timestamps are time.monotonic() (records from the reader and sender threads
+interleave, so they are not strictly monotonic across types). The 1 Hz
+link_window event carries wall-clock UTC because macOS' monotonic clock
+stops while the laptop sleeps.
+
+Writing: producers only pack + queue.put (no I/O on the 50 Hz path); a
+writer thread owns all filesystem access, opens the file lazily on the first
+DOWN record (starting without the plane leaves no file) and writes the
+accumulated buffer once per second. Crash resilience comes from the length
+prefix: a reader consumes up to the last complete record and drops a
+truncated tail. Logging can never take the app down - an OSError disables
+it with one console line.
+
+Reading: read() / header() / telemetry_frames() / commands() / events()
+and to_dataframe() (pandas is an optional analysis dependency, not in
+requirements.txt). CLI: python -m cockpitview.flightlog info|csv|events FILE
+"""
+
+import collections
+import csv
+import datetime
+import json
+import math
+import pathlib
+import queue
+import signal
+import struct
+import subprocess
+import sys
+import threading
+import time
+
+from . import protocol
+
+FORMAT = 1
+RECORD = struct.Struct("<dBH")
+TYPE_HEADER, TYPE_DOWN, TYPE_UP, TYPE_EVENT, TYPE_MAVLINK = range(5)
+TYPE_NAMES = {TYPE_HEADER: "HEADER", TYPE_DOWN: "DOWN", TYPE_UP: "UP", TYPE_EVENT: "EVENT", TYPE_MAVLINK: "MAVLINK"}
+
+FLUSH_PERIOD_S = 1.0
+FLUSH_BYTES = 64 * 1024
+# events kept while waiting for the first DOWN record; everything else that
+# arrives before the file exists is dropped (an hour of neutral commands and
+# link_window heartbeats with no plane must not end up behind the header)
+PRE_OPEN_EVENT_PREFIX = "serial_"
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+
+_TICK = object()  # writer wake-up without a record
+
+
+def utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def pack_record(t, rtype, payload):
+    return RECORD.pack(t, rtype, len(payload)) + payload
+
+
+class FlightLog:
+    """Queue + writer thread. `FlightLog(None)` is the null log: same API,
+    every method a no-op, so call sites never test for logging."""
+
+    def __init__(self, log_dir, args=None):
+        self._dir = pathlib.Path(log_dir) if log_dir else None
+        self._args = dict(args) if args else {}
+        self._queue = queue.SimpleQueue()
+        self._closed = False
+        self.path = None  # set by the writer once the file exists
+        self.bytes_written = 0
+        self._thread = None
+        if self._dir is not None:
+            self._thread = threading.Thread(target=self._run, name="flightlog", daemon=True)
+            self._thread.start()
+
+    @property
+    def enabled(self):
+        return self._dir is not None
+
+    def downlink(self, payload):
+        self._put(TYPE_DOWN, payload)
+
+    def uplink(self, payload):
+        self._put(TYPE_UP, payload)
+
+    def event(self, name, **fields):
+        self._put(TYPE_EVENT, json.dumps({"ev": name, **fields}, separators=(",", ":")).encode(), name)
+
+    def _put(self, rtype, payload, name=None):
+        if self._dir is None or self._closed:
+            return
+        self._queue.put((time.monotonic(), rtype, bytes(payload), name))
+
+    def close(self):
+        if self._dir is None or self._closed:
+            return
+        self._closed = True
+        self._queue.put(None)
+        self._thread.join(timeout=2.0)
+
+    # --- writer thread -----------------------------------------------------
+
+    def _run(self):
+        f = None
+        buf = bytearray()
+        pending_events = []
+        next_flush = time.monotonic() + FLUSH_PERIOD_S
+        try:
+            while True:
+                try:
+                    item = self._queue.get(timeout=max(0.0, next_flush - time.monotonic()))
+                except queue.Empty:
+                    item = _TICK
+                if item is None:
+                    break
+                if item is not _TICK:
+                    t, rtype, payload, name = item
+                    if f is None:
+                        if rtype == TYPE_DOWN:
+                            f = self._open(t, buf)
+                            for pending in pending_events:
+                                buf += pack_record(*pending[:3])
+                        elif rtype == TYPE_EVENT and name.startswith(PRE_OPEN_EVENT_PREFIX):
+                            pending_events.append(item)
+                            continue
+                        else:
+                            continue
+                    buf += pack_record(t, rtype, payload)
+                now = time.monotonic()
+                if f is not None and buf and (now >= next_flush or len(buf) >= FLUSH_BYTES):
+                    self._write(f, buf)
+                if now >= next_flush:
+                    next_flush = now + FLUSH_PERIOD_S
+            if f is not None:
+                self._write(f, buf)
+                f.close()
+        except OSError as err:
+            print(f"flight log disabled: {err}")
+            self._closed = True  # producers stop queueing; the queue is garbage
+            if f is not None:
+                try:
+                    f.close()
+                except OSError:
+                    pass
+
+    def _open(self, t_mono0, buf):
+        self._dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        path = self._dir / f"{stamp}.cvlog"
+        n = 1
+        while path.exists():
+            n += 1
+            path = self._dir / f"{stamp}-{n}.cvlog"
+        f = open(path, "wb")
+        header = json.dumps(build_header(t_mono0, self._args), default=str).encode()
+        buf += pack_record(t_mono0, TYPE_HEADER, header)
+        self._write(f, buf)  # a crash in the first second still leaves a readable file
+        self.path = path
+        print(f"Logging to {path}")
+        return f
+
+    def _write(self, f, buf):
+        f.write(buf)
+        f.flush()
+        self.bytes_written += len(buf)
+        buf.clear()
+
+
+def build_header(t_mono0, args):
+    flags = {name[len("TELEM_FLAG_") :]: value for name, value in vars(protocol).items() if name.startswith("TELEM_FLAG_")}
+    return {
+        "format": FORMAT,
+        "protocol_version": protocol.PROTOCOL_VERSION,
+        "telemetry_struct": protocol._TELEMETRY.format,
+        "telemetry_fields": list(protocol.Telemetry._fields),
+        "telemetry_flags": flags,
+        "command_struct": protocol._COMMAND.format,
+        "command_fields": list(protocol.Command._fields),
+        "started_utc": utc_now(),
+        "t_mono0": t_mono0,
+        **git_state(),
+        "args": args,
+    }
+
+
+def git_state():
+    """{"git": short hash or None, "git_dirty": bool} - identifies the era of
+    the numbers together with protocol_version (semantic changes such as a
+    sign fix leave the struct unchanged)."""
+    try:
+        run = lambda *cmd: subprocess.run(  # noqa: E731
+            ["git", *cmd], cwd=REPO_ROOT, capture_output=True, text=True, timeout=5, check=True
+        ).stdout.strip()
+        return {"git": run("rev-parse", "--short", "HEAD"), "git_dirty": bool(run("status", "--porcelain", "--untracked-files=no"))}
+    except (OSError, subprocess.SubprocessError):
+        return {"git": None, "git_dirty": None}
+
+
+# --- reading -----------------------------------------------------------------
+
+
+def read(path):
+    """Yields (t_mono, type, payload) for every complete record; a truncated
+    tail (crash mid-write) is silently dropped."""
+    data = pathlib.Path(path).read_bytes()
+    view = memoryview(data)
+    pos = 0
+    while pos + RECORD.size <= len(data):
+        t, rtype, length = RECORD.unpack_from(data, pos)
+        pos += RECORD.size
+        if pos + length > len(data):
+            return
+        yield t, rtype, bytes(view[pos : pos + length])
+        pos += length
+
+
+def header(path):
+    """The header dict; raises ValueError for a non-cvlog or a newer format."""
+    for t, rtype, payload in read(path):
+        if rtype != TYPE_HEADER:
+            raise ValueError(f"{path}: first record is not a header")
+        hdr = json.loads(payload)
+        if hdr.get("format", 0) > FORMAT:
+            raise ValueError(f"{path}: log format {hdr['format']} is newer than this reader ({FORMAT})")
+        return hdr
+    raise ValueError(f"{path}: empty log")
+
+
+def upgrade(frame, version):
+    """Maps a frame decoded by a log's own layout onto the current Telemetry
+    (or Command) namedtuple: missing fields become NaN, and this is the one
+    place for version-dependent semantic fixes (re-scaled fields, sign
+    flips...). Identity until the first such change."""
+    target = protocol.Telemetry if frame.msg_id == protocol.MSG_TELEMETRY else protocol.Command
+    if type(frame)._fields == target._fields:
+        return target._make(frame)
+    return target._make(getattr(frame, name, math.nan) for name in target._fields)
+
+
+class MessageDecoder:
+    """Decodes one message type by the layout stored in a log header. Frames
+    of another protocol version (or a size that doesn't match) are counted
+    in `skipped` by version and returned as None - a mixed-version file
+    comes from a bench session with a stale air firmware."""
+
+    def __init__(self, hdr, msg_id, struct_key, fields_key, name):
+        self.msg_id = msg_id
+        self.version = hdr["protocol_version"]
+        self._struct = struct.Struct(hdr[struct_key])
+        self._tuple = collections.namedtuple(name, hdr[fields_key])
+        self.skipped = collections.Counter()
+
+    @classmethod
+    def telemetry(cls, hdr):
+        return cls(hdr, protocol.MSG_TELEMETRY, "telemetry_struct", "telemetry_fields", "LoggedTelemetry")
+
+    @classmethod
+    def command(cls, hdr):
+        return cls(hdr, protocol.MSG_COMMAND, "command_struct", "command_fields", "LoggedCommand")
+
+    def decode(self, payload):
+        if len(payload) < 2 or payload[0] != self.msg_id:
+            return None  # another message type, not ours to count
+        if payload[1] != self.version or len(payload) != self._struct.size:
+            self.skipped[payload[1]] += 1
+            return None
+        return upgrade(self._tuple._make(self._struct.unpack(payload)), payload[1])
+
+
+def _decoded(path, rtype, make_decoder):
+    decoder = make_decoder(header(path))
+    for t, rec_type, payload in read(path):
+        if rec_type == rtype:
+            msg = decoder.decode(payload)
+            if msg is not None:
+                yield t, msg
+
+
+def telemetry_frames(path):
+    """Yields (t_mono, protocol.Telemetry) for every decodable downlink frame."""
+    return _decoded(path, TYPE_DOWN, MessageDecoder.telemetry)
+
+
+def commands(path):
+    """Yields (t_mono, protocol.Command) for every logged command."""
+    return _decoded(path, TYPE_UP, MessageDecoder.command)
+
+
+def events(path):
+    """Yields (t_mono, dict) for every EVENT record."""
+    for t, rtype, payload in read(path):
+        if rtype == TYPE_EVENT:
+            yield t, json.loads(payload)
+
+
+def flag_columns(hdr, flags):
+    """{'gps_fix': bool, ...} from a flags byte and the header's flag map."""
+    return {name.lower(): bool(flags & bit) for name, bit in hdr["telemetry_flags"].items()}
+
+
+def to_dataframe(path, kind="telemetry"):
+    """pandas DataFrame of the telemetry (flags expanded to boolean columns)
+    or the commands (`kind="commands"`), with a `t` column, sorted by it.
+    Join the two with pandas.merge_asof."""
+    import pandas  # optional analysis dependency
+
+    hdr = header(path)
+    if kind == "telemetry":
+        rows = [(t, *frame, *flag_columns(hdr, frame.flags).values()) for t, frame in telemetry_frames(path)]
+        columns = ["t", *protocol.Telemetry._fields, *(name.lower() for name in hdr["telemetry_flags"])]
+    elif kind == "commands":
+        rows = [(t, *cmd) for t, cmd in commands(path)]
+        columns = ["t", *protocol.Command._fields]
+    else:
+        raise ValueError(f"unknown kind {kind!r}")
+    return pandas.DataFrame(rows, columns=columns).sort_values("t", ignore_index=True)
+
+
+# --- CLI ---------------------------------------------------------------------
+
+GAP_REPORT_S = 0.5  # downlink silence worth listing in `info`
+TELEMETRY_RATE_HZ = 50.0  # nominal, for the lost-frame estimate in `info`
+
+
+def _info(path):
+    hdr = header(path)
+    print(f"{path}")
+    print(f"  started {hdr['started_utc']}  protocol v{hdr['protocol_version']}  format {hdr['format']}")
+    dirty = " (dirty)" if hdr.get("git_dirty") else ""
+    print(f"  cocpitView git {hdr.get('git')}{dirty}")
+
+    counts = collections.Counter()
+    first = last = None
+    telemetry = MessageDecoder.telemetry(hdr)
+    cmds = MessageDecoder.command(hdr)
+    frames = 0
+    gaps = []
+    reboots = 0
+    prev_t = prev_boot_ms = None
+    event_names = collections.Counter()
+    heartbeats = []  # t of link_window events, to tell "link down" from "PC dead"
+
+    for t, rtype, payload in read(path):
+        counts[rtype] += 1
+        first = t if first is None else first
+        last = t
+        if rtype == TYPE_DOWN:
+            frame = telemetry.decode(payload)
+            if frame is None:
+                continue
+            frames += 1
+            if prev_t is not None:
+                if t - prev_t > GAP_REPORT_S:
+                    gaps.append((prev_t, t))
+                if frame.time_boot_ms < prev_boot_ms:
+                    reboots += 1
+            prev_t, prev_boot_ms = t, frame.time_boot_ms
+        elif rtype == TYPE_UP:
+            cmds.decode(payload)
+        elif rtype == TYPE_EVENT:
+            ev = json.loads(payload)
+            event_names[ev["ev"]] += 1
+            if ev["ev"] == "link_window":
+                heartbeats.append(t)
+
+    duration = (last - first) if first is not None else 0.0
+    if prev_t is not None and last - prev_t > GAP_REPORT_S:
+        gaps.append((prev_t, last))  # the plane went silent before the app was closed
+    print(f"  duration {duration:.1f} s, {sum(counts.values())} records:", ", ".join(f"{TYPE_NAMES.get(k, k)} {v}" for k, v in sorted(counts.items())))
+    print(f"  telemetry frames {frames}" + (f", air reboots {reboots}" if reboots else ""))
+    for version, n in sorted(telemetry.skipped.items()):
+        print(f"  {n} telemetry frames v{version} skipped (header is v{hdr['protocol_version']})")
+    for version, n in sorted(cmds.skipped.items()):
+        print(f"  {n} commands v{version} skipped")
+    if event_names:
+        print("  events:", ", ".join(f"{k} {v}" for k, v in sorted(event_names.items())))
+    for start, end in gaps:
+        alive = any(start < hb < end for hb in heartbeats)
+        lost = int(round((end - start) * TELEMETRY_RATE_HZ)) - 1
+        until = "end of log" if end == last else f"{end - first:8.1f} s"
+        print(f"  telemetry gap {start - first:8.1f} s -> {until} ({end - start:.1f} s, ~{lost} frames, PC {'alive' if alive else 'silent'})")
+
+
+def _csv(path):
+    hdr = header(path)
+    flag_names = [name.lower() for name in hdr["telemetry_flags"]]
+    out = csv.writer(sys.stdout)
+    out.writerow(["t", *protocol.Telemetry._fields, *flag_names])
+    for t, frame in telemetry_frames(path):
+        # %.7g: the wire floats are float32, their float64 repr is noise
+        values = (f"{v:.7g}" if isinstance(v, float) else v for v in frame)
+        out.writerow([f"{t:.4f}", *values, *(int(v) for v in flag_columns(hdr, frame.flags).values())])
+
+
+def _events(path):
+    hdr = header(path)
+    t0 = hdr["t_mono0"]
+    for t, ev in events(path):
+        rest = {k: v for k, v in ev.items() if k != "ev"}
+        print(f"{t - t0:9.3f}  {ev['ev']:<16} {json.dumps(rest)}")
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)  # `... csv FILE | head` exits quietly
+    commands_ = {"info": _info, "csv": _csv, "events": _events}
+    if len(argv) != 2 or argv[0] not in commands_:
+        print(f"usage: python -m cockpitview.flightlog {'|'.join(commands_)} FILE.cvlog", file=sys.stderr)
+        return 2
+    commands_[argv[0]](pathlib.Path(argv[1]))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

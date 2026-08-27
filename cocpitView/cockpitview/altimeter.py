@@ -29,8 +29,9 @@ class BaroCalibrator:
     """Fills ALTITUDE.altitude_amsl (and GLOBAL_POSITION_INT.alt) from the
     baro-relative altitude once the ground offset has been established."""
 
-    def __init__(self, terrain):
+    def __init__(self, terrain, log=None):
         self._terrain = terrain
+        self._log = log  # flightlog.FlightLog or None; the lock is PC-side state the log can't recompute
         self._offset_m = None  # AMSL = baro_rel + offset, None until locked
         self._samples = []
         self._baro_rel_m = None
@@ -76,3 +77,5 @@ class BaroCalibrator:
         if len(self._samples) >= SAMPLES_TO_LOCK:
             self._offset_m = statistics.median(self._samples)
             print(f"Baro calibrated: field elevation {ground_m:.1f} m AMSL")
+            if self._log is not None:
+                self._log.event("baro_calibrated", offset_m=self._offset_m, field_elevation_m=ground_m)

@@ -32,6 +32,8 @@ decisions. Keep it updated when the design evolves.
   plugged into any USB port; `custom_usb_location` is only a probe-order hint.
   Note: the probe resets the board it touches.
 - Ground app: `cocpitView/run.sh`
+- Ground app tests: `cd cocpitView && .venv/bin/python -m unittest discover tests`
+- Flight log inspection: `cd cocpitView && .venv/bin/python -m cockpitview.flightlog info|csv|events logs/<file>.cvlog`
 
 ## Rules
 
@@ -175,6 +177,32 @@ decisions. Keep it updated when the design evolves.
   vs multimeter — channels read 2-2.7 % high on nominal ratios). NOT done:
   the second calibration point on a near-empty pack (offsets; plan:
   `doc/plans/2026-08-10-battery-cell-monitoring.md`).
+- Flight logging is live (`cockpitview/flightlog.py`, plan
+  `doc/plans/2026-08-25-telemetry-logging.md`): every cocpitView session
+  with the real link writes `cocpitView/logs/<timestamp>.cvlog` (gitignored;
+  `--no-log`/`--log-dir`; the emulator is never logged — it has no wire
+  frames). Records are `<dBH` (monotonic s, type, len) + payload: `DOWN` =
+  every raw payload from the bridge *before* any msgId/version filter, `UP`
+  = every command sent (50 Hz, unconditionally — also while the plane is
+  off, ~6 MB/h), `EVENT` = JSON for `baro_calibrated`, the 1 Hz
+  `link_window` heartbeat (proves the reader was alive during a telemetry
+  gap; carries UTC because macOS' monotonic clock stops in sleep) and
+  `serial_open`/`serial_lost`. The header JSON stores the struct formats,
+  field names and flag map taken from `protocol.py`, plus git hash/dirty and
+  CLI args — readers decode by the header, so a bump never orphans old logs;
+  frames of a foreign version are counted and skipped, not decoded. Rules
+  that follow: **`Telemetry`/`Command` field names are never renamed, only
+  added** (they are the pandas column API across all logs) and **`msgId`,
+  `version` stay the first two bytes of every message**. Version-dependent
+  semantic fixes belong in `flightlog.upgrade()` (identity today). The
+  writer thread owns all file I/O: lazy open on the first `DOWN` (no plane →
+  no file; pre-open `UP`/`link_window` are dropped, `serial_*` kept), 1 s
+  bulk flush, header flushed immediately, `OSError` disables logging without
+  touching the app. `_read` now does `ser.read(max(1, ser.in_waiting))` —
+  the old `read(256)` quantized timestamps (and HUD latency) to ~50 ms
+  batches — verified on the bench 2026-08-27: 5996 frames, dt median
+  20.0 ms, p95 22.4 ms. Tests in `cocpitView/tests/` (stdlib unittest). NOT
+  done: the replay source.
 - Next steps: second battery calibration point; joystick input in
   cocpitView (the command channels are already on the wire, neutral for
   now); servos + a real failsafe action on the air side; course-over-ground

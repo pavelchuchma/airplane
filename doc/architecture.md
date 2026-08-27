@@ -43,6 +43,12 @@ Data flows:
   cocpitView → (translated to MAVLink) → QGroundControl.
 - **Control (up):** joystick → cocpitView → USB → ground ESP32 → ESP-NOW →
   air ESP32 → servos. This replaces the RC transmitter entirely.
+- **Flight log:** cocpitView records both directions as they cross the USB
+  link — every raw downlink payload and every command sent — plus the few
+  PC-side facts the wire cannot reproduce (baro calibration offset, a 1 Hz
+  liveness heartbeat, serial open/loss) into `cocpitView/logs/*.cvlog`
+  (`cockpitview/flightlog.py`). The PC is the logging point because it
+  already sees everything; there is no on-air storage.
 
 ## Current vs. target state
 
@@ -127,6 +133,24 @@ exists — and shows link quality (`LNK -72 U2% D0%`) and the air-side
 follow-ups: joystick input, servos + a real failsafe action (today the flag
 and a `#` diagnostic are the whole action), and the GPS course-over-ground
 yaw correction (above a groundspeed threshold).
+
+Every session is logged (`--no-log` to opt out): `flightlog.py` writes the
+raw wire payloads rather than the derived MAVLink, because the MAVLink stream
+is lossy (NaN → 0, integer scaling, messages suppressed while a sensor is
+dead, altitude rewritten by the baro calibration) and fully derivable from
+the raw records, never the reverse. The `.cvlog` container is a sequence of
+`<dBH`-prefixed records (monotonic time, type, length); the first record is a
+JSON header carrying the struct formats, field names and flag map of the
+protocol version in use, so old logs stay decodable after `PROTOCOL_VERSION`
+bumps — readers decode by the header, not by the current `protocol.py`.
+Producers only queue bytes; a writer thread owns all file I/O, opens the file
+on the first telemetry frame and flushes once per second (a crash loses
+≤ 1 s, a truncated tail is dropped on read). Post-flight use:
+`python -m cockpitview.flightlog info|csv|events FILE`, or
+`flightlog.to_dataframe()` with pandas — this is where the pitot position
+error (GPS vs. IAS on reciprocal legs) and the second battery calibration
+point will come from. Replay into the HUD/QGC is a planned third source that
+feeds logged frames through the same publishing path as the live link.
 
 ## Power architecture (airplane, planned)
 

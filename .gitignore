@@ -6,6 +6,7 @@
 __pycache__/
 .venv/
 cocpitView/data/
+cocpitView/logs/
 
 # PlatformIO
 .pio/

@@ -6,7 +6,9 @@ Telemetry arrives over the ESP-NOW link via the ground bridge ESP32 on USB
 serial (default; commands go back out the same way at 50 Hz) or is generated
 by the built-in flight-profile emulator (--emulator), and is forwarded to
 QGroundControl as MAVLink over UDP (default 127.0.0.1:14550) - cocpitView is
-the telemetry hub, QGC an optional downstream consumer.
+the telemetry hub, QGC an optional downstream consumer. The raw wire traffic
+is always logged to logs/<timestamp>.cvlog (see flightlog.py; --no-log to
+disable; the emulator is never logged).
 
 Usage:
     ./run.sh
@@ -27,6 +29,7 @@ from .altimeter import BaroCalibrator
 from .camera import Camera
 from .emulator_source import EmulatorSource
 from .espnow_source import EspNowSource
+from .flightlog import FlightLog
 from .hud import Hud
 from .telemetry import TelemetryHub
 from .terrain import Terrain
@@ -53,6 +56,12 @@ def main():
         default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "terrain.npz"),
         help="terrain grid from cockpitview/terrain_fetch.py (default: data/terrain.npz)",
     )
+    parser.add_argument(
+        "--log-dir",
+        default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"),
+        help="directory for the raw telemetry/command logs (default: logs/ next to the package)",
+    )
+    parser.add_argument("--no-log", action="store_true", help="do not write a .cvlog flight log")
     parser.add_argument("--dump-frame", metavar="PATH", help="debug: render for 2 s, save a PNG screenshot to PATH and exit")
     args = parser.parse_args()
 
@@ -70,14 +79,19 @@ def main():
     if terrain is None:
         print(f"No terrain grid at '{args.terrain}' - AMSL/AGL readouts disabled (run python -m cockpitview.terrain_fetch)")
 
-    calibrator = BaroCalibrator(terrain) if terrain is not None else None
+    # the emulator has no wire frames to log (it publishes MAVLink directly)
+    log = FlightLog(None if args.no_log or args.emulator else args.log_dir, args=vars(args))
+    if log.enabled:
+        print(f"Flight log directory {args.log_dir} (the file opens with the first telemetry frame)")
+
+    calibrator = BaroCalibrator(terrain, log=log) if terrain is not None else None
     telemetry = TelemetryHub(
         qgc_host=args.qgc_host, qgc_port=args.qgc_port, system_id=args.system_id, calibrator=calibrator
     )
     if args.emulator:
         source = EmulatorSource(telemetry, rate=args.rate)
     else:
-        source = EspNowSource(telemetry, port=args.serial_port, baud=args.baud)
+        source = EspNowSource(telemetry, port=args.serial_port, baud=args.baud, log=log)
     source.start()
     print(f"Forwarding MAVLink to udp:{args.qgc_host}:{args.qgc_port}")
 
@@ -132,6 +146,7 @@ def main():
     finally:
         if camera is not None:
             camera.stop()
+        log.close()
         pygame.quit()
 
 
