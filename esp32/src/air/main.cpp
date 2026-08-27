@@ -92,11 +92,31 @@ constexpr float kComplementaryAlpha = 0.98f;          // gyro vs. accelerometer 
 constexpr int8_t kAxisSign[3] = {1, -1, -1};  // X, Y, Z: sensor -> body frame
 
 // Level trim: residual mounting misalignment of the board vs. the airframe,
-// measured 2026-08-25 with the airplane held in its ideal level attitude
-// (mean of 15 s of settled attitude, sd ~0.02 deg). Subtracted from the
-// accel-derived angles, so the filter converges to airframe-relative zero.
+// measured with the airplane at rest in its ideal level attitude and the
+// attitude settled. Subtracted from the accel-derived angles, so the filter
+// converges to airframe-relative zero. A re-measurement reads the residual
+// the *previous* trim left, so it is added to the constant, not replacing it.
+//   roll  -0.522 deg, 2026-08-25 (15 s settled, sd ~0.02 deg)
+//   pitch  0.087 -> 0.562 deg, 2026-08-27: the airframe still sat at
+//          +0.475 deg nose up at rest (26 s settled, sd 0.017 deg, in
+//          2026-08-27_182713.cvlog). Bias-corrected gyro rates read
+//          ~0.001 deg/s there, and the complementary filter's tau is ~1 s,
+//          so the offset came entirely from the accel path - i.e. it really
+//          is mounting misalignment and a trim constant is the right fix.
+//
+// The pitch value is PROVISIONAL. It was measured on the bench with the
+// wing undersides level, which is a rigging reference, not a flight one:
+// in level cruise the wing flies at a positive angle of attack (C_L ~ 0.27
+// at 13 m/s for this 28 N/m^2 wing loading, ~3.2 deg above the zero-lift
+// line), so the underside sits somewhere between 2 deg nose down and 1 deg
+// nose up depending on the airfoil camber - which is not documented for
+// this EPP wing and cannot be resolved on a bench. That 1-2 deg dwarfs the
+// 0.475 deg corrected here. The real zero must be measured in flight, like
+// the pitot position error: hold straight and level at cruise in calm air
+// for 15-20 s (use the vario, not the eye, as the level criterion) and add
+// the mean pitch of that window to the constant.
 constexpr float kRollTrimRad = -0.522f * PI / 180.0f;
-constexpr float kPitchTrimRad = 0.087f * PI / 180.0f;
+constexpr float kPitchTrimRad = 0.562f * PI / 180.0f;
 constexpr uint32_t kSampleIntervalUs = 20000;         // 50 Hz
 constexpr int kGyroCalibrationSamples = 200;
 constexpr uint32_t kImuDeadAfterUs = 500000;  // 0.5 s without a good read = IMU out
