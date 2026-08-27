@@ -20,8 +20,9 @@ File format - a sequence of length-prefixed records:
     0x01 DOWN     raw downlink payload as delivered by the bridge
     0x02 UP       raw uplink payload as sent
     0x03 EVENT    JSON {"ev": name, ...} - PC-side state that cannot be
-                  recomputed from the wire: baro_calibrated, the 1 Hz
-                  link_window liveness heartbeat, serial_open/serial_lost
+                  recomputed from the wire: home_locked, baro_calibrated,
+                  yaw_calibrated, the 1 Hz link_window liveness heartbeat,
+                  serial_open/serial_lost
     0x04 MAVLINK  reserved, never written
 
 Timestamps are time.monotonic() (records from the reader and sender threads
@@ -39,7 +40,12 @@ it with one console line.
 
 Reading: read() / header() / telemetry_frames() / commands() / events()
 and to_dataframe() (pandas is an optional analysis dependency, not in
-requirements.txt). CLI: python -m cockpitview.flightlog info|csv|events FILE
+requirements.txt). CLI:
+
+    python -m cockpitview.flightlog info|csv|events|yawcal FILE.cvlog
+
+`yawcal` replays the log through the GPS heading calibration (yawcal.py) -
+that is where its two field-measured constants get their numbers.
 """
 
 import collections
@@ -426,10 +432,57 @@ def _events(path):
         print(f"{t - t0:9.3f}  {ev['ev']:<16} {json.dumps(rest)}")
 
 
+def _yawcal(path):
+    """Replay the log through the GPS yaw calibration (yawcal.py) and print
+    every window it solved.
+
+    This is where the two constants yawcal.py cannot derive from first
+    principles get measured. GPS_VELOCITY_LAG_S: re-run with --lag values
+    around the default and take the one minimising `rms` (a wrong lag shows
+    up as residual concentrated in the turns). DRIFT_PSD: watch how `offset`
+    marches across a long flight - its slope is the gyro drift rate.
+
+    `k` is worth a look on its own: it is the IAS scale, i.e. the pitot
+    position error, measured in flight instead of on reciprocal legs.
+    """
+    from . import yawcal  # numpy is only needed for this subcommand
+
+    hdr = header(path)
+    print(f"{path}")
+    print(f"  started {hdr['started_utc']}  protocol v{hdr['protocol_version']}")
+    print(f"  lag {yawcal.GPS_VELOCITY_LAG_S:.3f} s  window {yawcal.WINDOW_S:.0f} s  "
+          f"max cond {yawcal.MAX_CONDITION:.0f}")
+    print()
+    header_row = f"{'t':>8}  {'n':>4} {'cond':>6} {'conc':>5} {'rms':>5} {'delta':>7} {'k':>5} " \
+                 f"{'wind':>11}  {'offset':>7} {'sigma':>6}  reject"
+    print(header_row)
+    print("-" * len(header_row))
+
+    frames = telemetry_frames(path)
+    rows = accepted = 0
+    for fit, offset_deg, sigma_deg in yawcal.replay(frames, lambda f: flag_columns(hdr, f.flags)):
+        rows += 1
+        accepted += fit.reject is None
+        wind_from = (math.degrees(math.atan2(fit.wind_e, fit.wind_n)) + 180.0) % 360.0
+        wind = f"{wind_from:03.0f}/{math.hypot(fit.wind_n, fit.wind_e):4.1f}"
+        cond = f"{fit.cond:6.1f}" if fit.cond < 1e4 else "  1e+4"
+        print(
+            f"{fit.t_mid:8.1f}  {fit.n:4d} {cond} {fit.concentration:5.3f} {fit.residual_rms:5.2f} "
+            f"{math.degrees(fit.delta):7.2f} {fit.k:5.3f} {wind:>11}  "
+            f"{'   ----' if offset_deg is None else f'{offset_deg:7.2f}'} "
+            f"{'  ----' if sigma_deg is None else f'{sigma_deg:6.2f}'}  {fit.reject or ''}"
+        )
+    if rows == 0:
+        print("  (no window was ever solvable - the log has no stretch of fast,")
+        print("   3D-fixed flight long enough; `info` shows what the session did contain)")
+    else:
+        print(f"\n  {accepted}/{rows} windows accepted")
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)  # `... csv FILE | head` exits quietly
-    commands_ = {"info": _info, "csv": _csv, "events": _events}
+    commands_ = {"info": _info, "csv": _csv, "events": _events, "yawcal": _yawcal}
     if len(argv) != 2 or argv[0] not in commands_:
         print(f"usage: python -m cockpitview.flightlog {'|'.join(commands_)} FILE.cvlog", file=sys.stderr)
         return 2

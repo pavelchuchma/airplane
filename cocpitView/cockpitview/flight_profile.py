@@ -25,6 +25,13 @@ HOME_LON_DEG = 15.000000
 HOME_ALT_M = 400.0
 AIRSPEED_MPS = 10.0  # horizontal flight speed, held constant along the body axis
 
+# Wind the air mass moves at, (north, east) m/s - here 3.5 m/s from the
+# north-west. Nonzero on purpose: with still air the course over ground
+# equals the heading, which is the one case where GPS yaw calibration is
+# trivially right, so a windless emulator would "pass" yawcal.py without
+# ever exercising the wind triangle it exists to solve.
+WIND_NE_MPS = (-2.5, 2.5)
+
 _METERS_PER_DEG_LAT = 111_320.0
 
 # (name, duration [s], kind, params)
@@ -154,28 +161,41 @@ def _position_within_cycle(u):
 def position_ned(t):
     """Position (north_m, east_m, down_m) relative to HOME at time t (cycles
     accumulate, so the aircraft keeps progressing across repeats instead of
-    circling in place)."""
+    circling in place).
+
+    The trajectory table is integrated from the *air*-relative velocity, so
+    the whole air mass is displaced by wind * t on top of it - exact for a
+    constant wind, and it keeps the wind out of the precomputed table."""
     cycles = int(t // TOTAL_DURATION)
     u = t % TOTAL_DURATION
     n0, e0, d0 = _position_within_cycle(u)
     cn, ce, cd = _CYCLE_DISPLACEMENT
-    return n0 + cycles * cn, e0 + cycles * ce, d0 + cycles * cd
+    wind_n, wind_e = WIND_NE_MPS
+    return n0 + cycles * cn + wind_n * t, e0 + cycles * ce + wind_e * t, d0 + cycles * cd
 
 
 def gps_state(t):
-    """Returns a dict with GPS/telemetry data at time t:
-    lat_deg, lon_deg, alt_m (AMSL), vn/ve/vd (m/s, NED), heading_deg."""
+    """Returns a dict with GPS/telemetry data at time t: lat_deg, lon_deg,
+    alt_m (AMSL), vn/ve/vd (m/s, NED - over ground), heading_deg and cog_deg.
+
+    heading_deg and cog_deg are the same number only in still air. The
+    aircraft's nose points along its *air*-relative velocity, while the GPS
+    measures its motion over ground; the angle between them is the drift
+    angle, and separating the two is exactly what yawcal.py is for.
+    """
     north_m, east_m, down_m = position_ned(t)
     lat_deg = HOME_LAT_DEG + north_m / _METERS_PER_DEG_LAT
     lon_deg = HOME_LON_DEG + east_m / (_METERS_PER_DEG_LAT * math.cos(math.radians(HOME_LAT_DEG)))
     alt_m = HOME_ALT_M - down_m
 
-    vn, ve, vd = _velocity_ned(t)
-    # Actual (compass) heading derived from the velocity direction, not from the
-    # "nominal" yaw parameter used to build the orientation - the latter doesn't
-    # match the aircraft's actual nose direction during inverted flight (e.g.
-    # the top of a loop).
-    heading_deg = math.degrees(math.atan2(ve, vn)) % 360.0
+    air_vn, air_ve, vd = _velocity_ned(t)
+    wind_n, wind_e = WIND_NE_MPS
+    vn, ve = air_vn + wind_n, air_ve + wind_e
+    # Nose direction from the air-relative velocity, not from the "nominal"
+    # yaw parameter used to build the orientation - the latter doesn't match
+    # the aircraft's actual nose direction during inverted flight (e.g. the
+    # top of a loop).
+    heading_deg = math.degrees(math.atan2(air_ve, air_vn)) % 360.0
 
     return {
         "lat_deg": lat_deg,
@@ -186,4 +206,5 @@ def gps_state(t):
         "ve": ve,
         "vd": vd,
         "heading_deg": heading_deg,
+        "cog_deg": math.degrees(math.atan2(ve, vn)) % 360.0,
     }

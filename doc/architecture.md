@@ -59,9 +59,11 @@ retired. The air firmware reads the GY-91 board: attitude from the IMU and
 altitude/vario from the BMP280 barometer (relative to the boot location,
 translated to MAVLink VFR_HUD + ALTITUDE by cocpitView). Note the GY-91 turned
 out to carry an MPU-6500, not the advertised MPU-9250 — there is no
-magnetometer, so yaw is gyro-integration only and drifts; the plan is to
-correct it from GPS course-over-ground (fine for a fixed-wing, and it avoids
-compass calibration entirely). The Quescan G10A-F30 GPS (u-blox M10) is on
+magnetometer, so yaw is gyro-integration only: its datum is whatever heading
+the aircraft booted on, and it drifts from there. It is calibrated in flight
+against the GPS (`cockpitview/yawcal.py`, see below), which avoids compass
+calibration and the airframe's magnetic interference entirely. The Quescan
+G10A-F30 GPS (u-blox M10) is on
 UART2: the firmware configures it at every boot (flash-less chip — 5 Hz nav
 rate, airborne dynamic model, RMC+GGA only) and appends position/groundspeed/
 course/fix-quality to the CSV; cocpitView forwards them as GPS_RAW_INT +
@@ -141,9 +143,51 @@ serial, and cocpitView (`cockpitview/espnow_source.py` + `protocol.py`) reads
 the bridge, sends 50 Hz commands — neutral channels until the joystick
 exists — and shows link quality (`LNK -72 U2% D0%`) and the air-side
 `FAILSAFE` flag on the HUD, plus RADIO_STATUS/STATUSTEXT for QGC. Remaining
-follow-ups: joystick input, servos + a real failsafe action (today the flag
-and a `#` diagnostic are the whole action), and the GPS course-over-ground
-yaw correction (above a groundspeed threshold).
+follow-ups: joystick input, and servos + a real failsafe action (today the
+flag and a `#` diagnostic are the whole action).
+
+### Heading calibration without a magnetometer
+
+GPS course over ground is not the missing compass: it is where the aircraft
+*moves*, which differs from where its nose points by the wind drift angle —
+18° already at 5 m/s of wind and 15 m/s of flight. Feeding `COG − yaw` back
+would calibrate the wind, not the gyro. What *is* solvable is the whole wind
+triangle at once. With the pitot's airspeed, the GPS ground velocity and the
+offset, drifting gyro yaw ψ:
+
+    v_ground = k · IAS · u(ψ + Δ) + wind
+
+the substitution `a = k·cosΔ`, `b = k·sinΔ` makes this linear in
+`(a, b, wind_n, wind_e)`, so ordinary least squares over a window of samples
+yields the yaw offset `Δ = atan2(b, a)`, the wind vector — worth its own HUD
+line before landing — and `k = hypot(a, b)`, the scale between indicated and
+true airspeed, i.e. an in-flight measurement of the pitot's position error
+that would otherwise need reciprocal legs against GPS.
+
+The catch is observability: with every sample on one heading the system is
+singular and no amount of averaging separates the offset from the wind.
+Flying an arc is what makes it solvable, and the condition number of the
+(column-equilibrated) design matrix states exactly how well — 1.0 for a full
+360°, 3.5 for a 0–90° sweep, 9.9 for ±20°, 10¹⁵ for straight flight. A window
+above `MAX_CONDITION` is rejected outright rather than returning a confident
+looking number. Two time scales are then kept apart: wind is quasi-constant
+only over a minute, which bounds the window; the offset drifts slowly and
+linearly, which a two-state (offset, drift rate) Kalman filter tracks across
+windows. Each fit is applied at the *centroid* of its window, so a 60 s
+window costs no lag, and only windows disjoint from the last one fed reach
+the filter — consecutive windows share 59/60 of their samples, and feeding
+all of them would let the filter mistake one measurement for sixty.
+
+The calibrator sits in the `TelemetryHub` processor chain and rewrites the
+heading in ATTITUDE/VFR_HUD, so the HUD tape, the flight path marker and QGC
+all get a true heading without knowing the module exists. Until an estimate
+exists it rewrites nothing and the HUD boxes the heading as `~037` — the boot
+datum is still worth reading for relative turns, it just must not be mistaken
+for a compass. Gate constants (`GPS_VELOCITY_LAG_S`, the drift PSD) are
+provisional until measured on an airframe;
+`python -m cockpitview.flightlog yawcal FILE.cvlog` replays a log through the
+very same gate, window and filter objects the live path uses, which is how
+they get their numbers.
 
 Every session is logged (`--no-log` to opt out): `flightlog.py` writes the
 raw wire payloads rather than the derived MAVLink, because the MAVLink stream

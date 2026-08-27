@@ -33,7 +33,7 @@ decisions. Keep it updated when the design evolves.
   Note: the probe resets the board it touches.
 - Ground app: `cocpitView/run.sh`
 - Ground app tests: `cd cocpitView && .venv/bin/python -m unittest discover tests`
-- Flight log inspection: `cd cocpitView && .venv/bin/python -m cockpitview.flightlog info|csv|events logs/<file>.cvlog`
+- Flight log inspection: `cd cocpitView && .venv/bin/python -m cockpitview.flightlog info|csv|events|yawcal logs/<file>.cvlog`
 
 ## Rules
 
@@ -60,8 +60,9 @@ decisions. Keep it updated when the design evolves.
   would change the callback signatures).
 - The sensor board is a GY-91, but its IMU is an
   MPU-6500 (verified via WHO_AM_I = 0x70 and no AK8963 at 0x0C) — a fake
-  "MPU-9250", so there is **no magnetometer**. Yaw drifts; the plan is GPS
-  course-over-ground correction, not a compass. In the airframe the board is
+  "MPU-9250", so there is **no magnetometer**. Yaw is gyro integration only:
+  arbitrary boot datum plus drift, calibrated PC-side against the GPS (see
+  `cockpitview/yawcal.py` below), never against a compass. In the airframe the board is
   mounted **upside down — rotated 180° about body X** (sensor X still
   forward), so `mpuReadRaw()` negates the Y and Z accel/gyro counts into the
   X-forward/Y-right/Z-up body frame (`kAxisSign`, applied at the driver so
@@ -223,9 +224,43 @@ decisions. Keep it updated when the design evolves.
   batches — verified on the bench 2026-08-27: 5996 frames, dt median
   20.0 ms, p95 22.4 ms. Tests in `cocpitView/tests/` (stdlib unittest). NOT
   done: the replay source.
+- Heading is calibrated against the GPS, not a compass
+  (`cockpitview/yawcal.py`, plan `doc/plans/2026-08-27-yaw-gps-calibration.md`).
+  `COG − yaw` is deliberately **not** used — it is off by the wind drift
+  angle (18° at 5 m/s wind / 15 m/s flight), so it would calibrate the wind.
+  Instead a 60 s window of samples is least-squares fitted to the whole wind
+  triangle `v_ground = k·IAS·u(ψ+Δ) + wind`, which is *linear* in
+  `(k·cosΔ, k·sinΔ, wind_n, wind_e)`; it yields the yaw offset, the wind (HUD
+  `WND 314/4 ±3`) and `k`, the IAS→TAS scale — i.e. the pitot position error
+  measured in flight. Observability is the whole game: straight flight is
+  singular, so a window is **rejected** (never solved with a wide error bar)
+  when the condition number of the equilibrated design matrix exceeds 10
+  (360° turn = 1.0, 0–90° sweep = 3.5, ±20° = 9.9, straight = 1e15). A
+  two-state (offset, drift rate) Kalman filter carries the estimate between
+  windows; each fit applies at its window *centroid* (else a 60 s window lags
+  30 s) and only windows disjoint from the last fed one reach the filter
+  (consecutive fits share 59/60 of their samples). Sits last in the
+  `TelemetryHub` processor chain and rewrites ATTITUDE/VFR_HUD heading, so
+  HUD/FPM/QGC all get true heading and **the wire protocol is untouched**;
+  the air side keeps sending raw yaw, so logs stay re-analysable. Before a
+  lock the HUD boxes the heading as `~037` and shows `WND ---` — the boot
+  datum is fine for relative turns, it just must not read as a compass. Two
+  sampling traps handled: the air side *holds* its 5 Hz GPS fields across
+  50 Hz frames (bit-identical repeats are dropped, else one epoch pairs with
+  ten attitudes) and the receiver's velocity solution lags, so attitude is
+  interpolated back by `GPS_VELOCITY_LAG_S`. The emulator now flies in wind
+  and reports a deliberately wrong yaw (a windless emulator makes
+  `COG == heading`, the one case the naive method gets right) and sends a
+  realistic `h_acc` — MAVLink's default 0 means "unknown" and kept both
+  `home.py` and this switched off in emulated sessions. **NOT measured on an
+  airframe:** every constant is provisional; `GPS_VELOCITY_LAG_S` and the
+  drift PSD need a real log via
+  `python -m cockpitview.flightlog yawcal FILE.cvlog` (same gate/window/filter
+  objects as the live path), and `k` wants cross-checking against reciprocal
+  legs.
 - Next steps: second battery calibration point; joystick input in
   cocpitView (the command channels are already on the wire, neutral for
-  now); servos + a real failsafe action on the air side; course-over-ground
-  yaw correction above a groundspeed threshold; mount the pitot on the wing
-  and calibrate its position error in flight (check the static holes are not
-  blocked first).
+  now); servos + a real failsafe action on the air side; fly the yaw
+  calibration and measure its two provisional constants; mount the pitot on
+  the wing and calibrate its position error in flight (check the static holes
+  are not blocked first).

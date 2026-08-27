@@ -21,6 +21,18 @@ HEARTBEAT_PERIOD_S = 1.0
 BATTERY_PERIOD_S = 0.5
 RATE_SAMPLE_DT = 0.005  # [s] for numerically differentiating angular rate
 
+# The air side has no magnetometer: its yaw is a gyro integration whose datum
+# is whatever heading the aircraft happened to boot on. Emulated as an error
+# in the *reported* attitude - reported yaw = true heading + YAW_OFFSET_DEG,
+# with the GPS staying truthful - which is what gives yawcal.py something to
+# find. The correction it converges on is therefore -YAW_OFFSET_DEG.
+YAW_OFFSET_DEG = 37.0
+# 1-sigma horizontal error [mm] the receiver reports in GST. It has to be a
+# real number rather than the "0 = unknown" MAVLink default, or every
+# consumer that checks fix quality before trusting a position - home.py, and
+# now yawcal.py - stays switched off for the whole emulated session.
+H_ACC_MM = 1500
+
 
 def attitude_at(t):
     """Returns (roll, pitch, yaw, rollspeed, pitchspeed, yawspeed) in radians / rad/s."""
@@ -32,6 +44,7 @@ def attitude_at(t):
 
     roll, pitch, yaw = quat.to_euler_zyx(q1)
     rollspeed, pitchspeed, yawspeed = quat.body_angular_rate(q1, q2, RATE_SAMPLE_DT)
+    yaw = (yaw + math.radians(YAW_OFFSET_DEG) + math.pi) % (2 * math.pi) - math.pi
     return roll, pitch, yaw, rollspeed, pitchspeed, yawspeed
 
 
@@ -47,7 +60,7 @@ class EmulatorSource:
         print(f"Flight profile repeats every {flight_profile.TOTAL_DURATION:.0f} s ({self._rate:g} Hz).")
         self._thread.start()
 
-    def _publish_gps_and_hud(self, t, time_boot_ms):
+    def _publish_gps_and_hud(self, t, time_boot_ms, yaw):
         mav = self._hub.mav
         gps = flight_profile.gps_state(t)
         lat_e7 = int(gps["lat_deg"] * 1e7)
@@ -57,7 +70,7 @@ class EmulatorSource:
         vx_cms = int(gps["vn"] * 100)
         vy_cms = int(gps["ve"] * 100)
         vz_cms = int(gps["vd"] * 100)
-        hdg_cdeg = int(gps["heading_deg"] * 100) % 36000
+        cog_cdeg = int(gps["cog_deg"] * 100) % 36000
         groundspeed = math.hypot(gps["vn"], gps["ve"])
         time_usec = int(t * 1e6) & 0xFFFFFFFFFFFFFFFF
 
@@ -71,8 +84,13 @@ class EmulatorSource:
                 100,  # eph (HDOP*100)
                 100,  # epv (VDOP*100)
                 int(groundspeed * 100),  # vel [cm/s]
-                hdg_cdeg,  # cog - matches heading when there's no wind
+                cog_cdeg,  # course over ground - heading + drift, not the heading
                 12,  # satellites_visible
+                0,  # alt_ellipsoid - not modeled
+                H_ACC_MM,
+                3000,  # v_acc [mm]
+                200,  # vel_acc [mm/s]
+                0,  # hdg_acc - not modeled
             )
         )
 
@@ -86,7 +104,7 @@ class EmulatorSource:
                 vx_cms,
                 vy_cms,
                 vz_cms,
-                hdg_cdeg,
+                cog_cdeg,
             )
         )
 
@@ -94,7 +112,8 @@ class EmulatorSource:
             mav.vfr_hud_encode(
                 flight_profile.AIRSPEED_MPS,
                 groundspeed,
-                int(gps["heading_deg"]) % 360,
+                # the air side derives this from its own yaw, offset and all
+                int(round(math.degrees(yaw))) % 360,
                 60,  # throttle [%] - fake constant
                 gps["alt_m"],
                 -gps["vd"],  # climb rate [m/s], positive = climbing
@@ -156,7 +175,7 @@ class EmulatorSource:
             self._hub.publish(
                 self._hub.mav.attitude_encode(time_boot_ms, roll, pitch, yaw, rollspeed, pitchspeed, yawspeed)
             )
-            self._publish_gps_and_hud(t, time_boot_ms)
+            self._publish_gps_and_hud(t, time_boot_ms, yaw)
 
             phase = flight_profile.phase_at(t)
             if phase["name"] != last_print_phase:

@@ -10,6 +10,9 @@ the telemetry hub, QGC an optional downstream consumer. The raw wire traffic
 is always logged to logs/<timestamp>.cvlog (see flightlog.py; --no-log to
 disable; the emulator is never logged).
 
+There is no magnetometer on board, so the heading arrives on an arbitrary
+boot datum and is calibrated against the GPS in flight (yawcal.py).
+
 Usage:
     ./run.sh
     ./.venv/bin/python -m cockpitview --camera 1 --fullscreen --fov 45
@@ -34,6 +37,7 @@ from .home import HomePoint
 from .hud import Hud
 from .telemetry import TelemetryHub
 from .terrain import Terrain
+from .yawcal import YawCalibrator
 
 
 def main():
@@ -89,11 +93,14 @@ def main():
     # samples - see home.py), so it exists even without a terrain grid
     home = HomePoint(log=log)
     calibrator = BaroCalibrator(terrain, home, log=log) if terrain is not None else None
+    # last in the chain: it rewrites the heading in ATTITUDE/VFR_HUD, which
+    # neither of the two above reads, so it observes their input unchanged
+    yaw_cal = YawCalibrator(log=log)
     telemetry = TelemetryHub(
         qgc_host=args.qgc_host,
         qgc_port=args.qgc_port,
         system_id=args.system_id,
-        processors=[p for p in (home, calibrator) if p is not None],
+        processors=[p for p in (home, calibrator, yaw_cal) if p is not None],
     )
     if args.emulator:
         source = EmulatorSource(telemetry, rate=args.rate)
@@ -142,6 +149,7 @@ def main():
             if terrain is not None and snap.position is not None and snap.amsl_m is not None:
                 snap.agl_m = terrain.agl_m(*snap.position, snap.amsl_m)
             snap.home_dist_m, snap.home_vert_m = home.offsets_from(snap)
+            snap.yaw_cal = yaw_cal.state()
             hud.draw(screen, snap, dt)
             pygame.display.flip()
 

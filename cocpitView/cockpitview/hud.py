@@ -178,7 +178,7 @@ class Hud:
 
     # ------------------------------------------------------- heading tape
 
-    def draw_heading_tape(self, surface, heading):
+    def draw_heading_tape(self, surface, heading, calibrated=True):
         tape_w = self.w * 0.42
         y = self.h * 0.075
         left = self.cx - tape_w / 2
@@ -207,7 +207,12 @@ class Hud:
 
         # caret above the tape + boxed current heading
         self._polygon(surface, [(self.cx, y), (self.cx - 7, y - 11), (self.cx + 7, y - 11)])
-        self._boxed_value(surface, f"{int(round(heading)) % 360:03d}", (self.cx, y - self.h * 0.034))
+        # A "~" on the box, not a hidden tape: without a magnetometer the
+        # datum starts as "whatever heading it booted on", which is still
+        # worth reading for relative turns - it just must not be mistaken for
+        # a compass. It disappears when yawcal.py locks the datum to true north.
+        prefix = "" if calibrated else "~"
+        self._boxed_value(surface, f"{prefix}{int(round(heading)) % 360:03d}", (self.cx, y - self.h * 0.034))
 
     # ------------------------------------------------- airspeed / altitude
 
@@ -312,6 +317,30 @@ class Hud:
             surface,
             f"DST {dist} ({vert})",
             (8, self.h - 6 - self.font.get_height()),
+            anchor="bottomleft",
+        )
+
+    # --------------------------------------------------- wind / yaw datum
+
+    def draw_wind(self, surface, cal):
+        """Wind and the trust in the heading datum, e.g. "WND 315/4 \u00b12"
+        (blowing from 315 deg at 4 m/s, heading good to 2 deg 1-sigma),
+        bottom-left above the DST line.
+
+        Both come out of the same wind-triangle fit (yawcal.py), so they
+        appear together: "WND ---" means no fit has been accepted yet and the
+        heading tape is still on its boot-relative datum. Hidden entirely when
+        the session runs without a calibrator."""
+        if cal is None:
+            return
+        if not cal.calibrated or cal.wind_mps is None:
+            text = "WND ---"
+        else:
+            text = f"WND {int(round(cal.wind_from_deg)) % 360:03d}/{cal.wind_mps:.0f} \u00b1{cal.sigma_deg:.0f}"
+        self._text(
+            surface,
+            text,
+            (8, self.h - 6 - 2 * self.font.get_height()),
             anchor="bottomleft",
         )
 
@@ -425,10 +454,11 @@ class Hud:
             self.draw_pitch_ladder(surface, snap.roll, snap.pitch)
             self.draw_roll_indicator(surface, snap.roll)
         self.draw_flight_path_marker(surface, snap)
-        self.draw_heading_tape(surface, snap.heading_deg)
+        self.draw_heading_tape(surface, snap.heading_deg, calibrated=snap.heading_calibrated)
         self.draw_airspeed(surface, snap.airspeed_kmh, snap.groundspeed_kmh)
         self.draw_altitude(surface, snap.display_alt_m, snap.agl_m, snap.vario_mps)
         self._text(surface, "NAV", (self.w * 0.11, self.h * 0.88), anchor="midleft")
+        self.draw_wind(surface, snap.yaw_cal)
         self.draw_home_distance(surface, snap.home_dist_m, snap.home_vert_m)
         self.draw_gps_status(surface, snap.gps_status)
         self.draw_link_status(surface, snap.link_status)

@@ -80,6 +80,10 @@ class TelemetrySnapshot:
     home_dist_m: float | None = None
     home_vert_m: float | None = None
 
+    # filled in by the main loop from yawcal.YawCalibrator: a CalState with
+    # the wind and the trust in the heading datum. None without a calibrator
+    yaw_cal: object = None
+
     heartbeat_ts: float = field(default=-math.inf)
 
     # ESP-NOW link stats, set by espnow_source.py via TelemetryHub.update_link()
@@ -155,6 +159,12 @@ class TelemetrySnapshot:
         if self._fresh(self.gpi_ts) and not math.isnan(self.gpi_heading_deg):
             return self.gpi_heading_deg % 360.0
         return None
+
+    @property
+    def heading_calibrated(self):
+        """True when the heading shown is tied to true north rather than to
+        the arbitrary datum the gyro integration started from at boot."""
+        return self.yaw_cal is not None and self.yaw_cal.calibrated
 
     @property
     def position(self):
