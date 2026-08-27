@@ -19,6 +19,13 @@ QGC je tedy jen volitelný downstream konzument; HUD běží i bez něj.
 - **výška nad terénem** (`R 123` pod rámečkem výšky, styl radar altimeter) —
   baro AMSL výška mínus elevace terénu z ČÚZK DMR 5G gridu (viz níže);
   bez pozice nebo mimo stažený grid se údaj nekreslí
+- **vzdálenost od místa startu** (`DST 1.5km (+358m)` vlevo dole nad GPS řádkem) —
+  přepona (šikmá vzdálenost) k místu, kde se zamkla první důvěryhodná GPS pozice
+  za stání, a rozdíl barometrické výšky proti němu; před zámkem se řádek nekreslí,
+  bez GPS pozice zmizí jen vzdálenost (`DST --- (+358m)`), bez bara jen výškový rozdíl
+- **stavové řádky** — `GPS 3D 12 ±4M` (vlevo dole), `LNK -72 U2% D0%` a
+  `BAT 11.4 3.80/3.79/3.81 Δ20` (vpravo dole; bliká při poklesu článku pod 3.2 V
+  nebo rozvážení > 150 mV)
 - ztráta telemetrie (>1 s) → blikající `NO TELEMETRY`; chybějící údaje → `---`
 
 ## Setup

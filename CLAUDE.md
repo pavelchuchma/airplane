@@ -146,14 +146,34 @@ decisions. Keep it updated when the design evolves.
   HUD shows `GPS 3D 12` and `LNK -72 U2% D0%` status lines (air-side RSSI,
   uplink/downlink loss), a `G 42` GPS ground-speed line under the airspeed
   box (from GLOBAL_POSITION_INT velocities, so it disappears without a fix)
-  and blinks `FAILSAFE` while the air side reports it.
+  and blinks `FAILSAFE` while the air side reports it. `TelemetryHub` runs a
+  chain of message processors (`HomePoint`, then `BaroCalibrator`) on every
+  published message before it reaches the snapshot and QGC.
   Protocol version mismatches are surfaced as one-shot console warnings
   (air → PC checked on every telemetry frame, PC → air reported back via
   `TELEM_FLAG_VERSION_MISMATCH`).
+- The launch point ("home") and the altimeter calibration are one event, so
+  one gate in `cockpitview/home.py` owns both: 25 GPS epochs (~5 s at 5 Hz)
+  that are 3D, report `hacc ≤ 5 m`, are below 1 m/s and have a baro sample
+  younger than 1 s; the median locks `(lat, lon, baro_rel)`. `BaroCalibrator`
+  registers as a sink on those very same samples and only adds a terrain
+  lookup per sample, so it can stay uncalibrated (outside the grid) while
+  home locks — never the reverse, and home needs no terrain grid at all.
+  Consequence to keep in mind: starting cocpitView mid-flight leaves both
+  off for the whole session, and the emulator cannot exercise either (it
+  flies from t = 0 and sends `h_acc = 0`) — testing is unit tests
+  (`tests/test_home.py`) plus the airframe. The HUD `DST 1.5km (+358m)` line
+  (bottom-left above `GPS`) is the slant range home + the baro altitude
+  difference; the vertical leg is a *baro* difference against `baro_rel` at
+  the lock (never GPS altitude, and `snap.baro_relative_m` is used instead of
+  `altitude_m` because the latter falls back to a GPS `relative_alt` that
+  `espnow_source` zero-fills when the baro is dead). GPS lost → `DST ---
+  (+358m)`, baro dead → the distance degrades to horizontal and shows
+  `(---)`.
 - Altitude display ignores GPS altitude entirely (its vertical noise is tens
-  of meters). `cockpitview/altimeter.py` calibrates the baro once on the
-  ground: after the first good 3D fix while stationary it locks
-  `offset = terrain(lat,lon) − baro_rel` against the CUZK DMR 5G grid
+  of meters). `cockpitview/altimeter.py` locks
+  `offset = terrain(lat,lon) − baro_rel` (median of the per-sample
+  differences) against the CUZK DMR 5G grid
   (`data/terrain.npz`, fetched by `cockpitview/terrain_fetch.py`). The HUD
   altitude box then shows baro AMSL (`---` until calibrated; falls back to
   baro-relative when no terrain grid is loaded) and `R` is
@@ -184,7 +204,7 @@ decisions. Keep it updated when the design evolves.
   frames). Records are `<dBH` (monotonic s, type, len) + payload: `DOWN` =
   every raw payload from the bridge *before* any msgId/version filter, `UP`
   = every command sent (50 Hz, unconditionally — also while the plane is
-  off, ~6 MB/h), `EVENT` = JSON for `baro_calibrated`, the 1 Hz
+  off, ~6 MB/h), `EVENT` = JSON for `home_locked` / `baro_calibrated`, the 1 Hz
   `link_window` heartbeat (proves the reader was alive during a telemetry
   gap; carries UTC because macOS' monotonic clock stops in sleep) and
   `serial_open`/`serial_lost`. The header JSON stores the struct formats,

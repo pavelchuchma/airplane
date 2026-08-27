@@ -70,9 +70,20 @@ flight-path marker, AGL readout and a GPS fix/satellite status line.
 Altitude display never uses the (noisy, tens of meters) GPS altitude:
 cocpitView calibrates the baro once on the ground against the local terrain
 elevation from a pre-fetched CUZK DMR 5G grid at the GPS *position*
-(`cockpitview/altimeter.py` — assumes the plane sits on the ground when the
-first fix arrives), then shows baro AMSL in the altitude box and
+(`cockpitview/altimeter.py`), then shows baro AMSL in the altitude box and
 `R = baro AMSL − terrain(position)` as the radar altitude.
+That calibration and the *launch point* are the same event, so both come from
+one gate in `cockpitview/home.py`: the first 25 GPS epochs that are 3D, carry
+a reported 1-sigma error ≤ 5 m, are taken below 1 m/s (still on the ground)
+and have a fresh baro sample; the median of those fixes locks
+`(lat, lon, baro_rel)` and the altimeter, registered as a sink on the very
+same samples, adds only the terrain lookup on top. So a launch outside the
+fetched grid loses the AMSL/AGL readouts but keeps the launch point, and
+starting cocpitView mid-flight leaves both off for the session — nothing that
+happens in the air could establish either. The launch point drives the HUD's
+`DST` line (slant range home + the baro altitude difference against it); its
+vertical leg is a pure baro difference, never GPS altitude, and it needs no
+terrain grid.
 The MS4525DO pitot sensor sits on the same I2C bus (address 0x28): its zero
 offset is re-measured at every boot (the offset is tens of Pa and drifts
 with temperature — the airplane must be stationary), the differential

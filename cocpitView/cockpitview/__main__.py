@@ -30,6 +30,7 @@ from .camera import Camera
 from .emulator_source import EmulatorSource
 from .espnow_source import EspNowSource
 from .flightlog import FlightLog
+from .home import HomePoint
 from .hud import Hud
 from .telemetry import TelemetryHub
 from .terrain import Terrain
@@ -84,9 +85,15 @@ def main():
     if log.enabled:
         print(f"Flight log directory {args.log_dir} (the file opens with the first telemetry frame)")
 
-    calibrator = BaroCalibrator(terrain, log=log) if terrain is not None else None
+    # the launch point drives the altimeter calibration too (same gate, same
+    # samples - see home.py), so it exists even without a terrain grid
+    home = HomePoint(log=log)
+    calibrator = BaroCalibrator(terrain, home, log=log) if terrain is not None else None
     telemetry = TelemetryHub(
-        qgc_host=args.qgc_host, qgc_port=args.qgc_port, system_id=args.system_id, calibrator=calibrator
+        qgc_host=args.qgc_host,
+        qgc_port=args.qgc_port,
+        system_id=args.system_id,
+        processors=[p for p in (home, calibrator) if p is not None],
     )
     if args.emulator:
         source = EmulatorSource(telemetry, rate=args.rate)
@@ -134,6 +141,7 @@ def main():
             snap.display_alt_m = snap.amsl_m if terrain is not None else snap.altitude_m
             if terrain is not None and snap.position is not None and snap.amsl_m is not None:
                 snap.agl_m = terrain.agl_m(*snap.position, snap.amsl_m)
+            snap.home_dist_m, snap.home_vert_m = home.offsets_from(snap)
             hud.draw(screen, snap, dt)
             pygame.display.flip()
 

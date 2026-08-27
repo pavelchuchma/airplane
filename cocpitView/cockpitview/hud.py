@@ -31,6 +31,15 @@ def wrap180(deg):
     return (deg + 180.0) % 360.0 - 180.0
 
 
+def format_distance(dist_m):
+    """Whole meters below a kilometer ("840m"), km with one decimal above
+    it ("1.5km") - the HUD has no room for more digits than that."""
+    meters = int(round(dist_m))
+    if meters >= 1000:
+        return f"{meters / 1000.0:.1f}km"
+    return f"{meters:d}m"
+
+
 class Hud:
     def __init__(self, size, fov_deg=40.0):
         self.w, self.h = size
@@ -286,6 +295,26 @@ class Hud:
                 anchor="center",
             )
 
+    # ------------------------------------------------- distance from home
+
+    def draw_home_distance(self, surface, dist_m, vert_m):
+        """Slant range back to the launch point and the altitude difference
+        against it, e.g. "DST 1.5km (+358m)", bottom-left one line above the
+        GPS line; hidden until the home fix locks (the GPS line right below
+        says why). The two legs come from independent sensors, so each shows
+        "---" on its own: no GPS position (the distance cannot be updated) or
+        a dead baro - and the distance then degrades to horizontal only."""
+        if dist_m is None and vert_m is None:
+            return
+        dist = "---" if dist_m is None else format_distance(dist_m)
+        vert = "---" if vert_m is None else f"{int(round(vert_m)):+d}m"
+        self._text(
+            surface,
+            f"DST {dist} ({vert})",
+            (8, self.h - 6 - self.font.get_height()),
+            anchor="bottomleft",
+        )
+
     # --------------------------------------------------------- GPS status
 
     def draw_gps_status(self, surface, gps):
@@ -400,6 +429,7 @@ class Hud:
         self.draw_airspeed(surface, snap.airspeed_kmh, snap.groundspeed_kmh)
         self.draw_altitude(surface, snap.display_alt_m, snap.agl_m, snap.vario_mps)
         self._text(surface, "NAV", (self.w * 0.11, self.h * 0.88), anchor="midleft")
+        self.draw_home_distance(surface, snap.home_dist_m, snap.home_vert_m)
         self.draw_gps_status(surface, snap.gps_status)
         self.draw_link_status(surface, snap.link_status)
         self.draw_battery_status(surface, snap.battery_cells_v)

@@ -75,6 +75,11 @@ class TelemetrySnapshot:
     agl_m: float | None = None
     display_alt_m: float | None = None
 
+    # filled in by the main loop from home.HomePoint: slant range to the
+    # launch point and the baro altitude difference against it
+    home_dist_m: float | None = None
+    home_vert_m: float | None = None
+
     heartbeat_ts: float = field(default=-math.inf)
 
     # ESP-NOW link stats, set by espnow_source.py via TelemetryHub.update_link()
@@ -122,6 +127,18 @@ class TelemetrySnapshot:
             return self.gpi_rel_alt_m
         if self._fresh(self.vfr_ts) and not math.isnan(self.vfr_alt_m):
             return self.vfr_alt_m
+        return None
+
+    @property
+    def baro_relative_m(self):
+        """Baro altitude relative to the air-side boot location, or None.
+        Strictly from ALTITUDE (a dead baro sends NaN there, so the timestamp
+        goes stale) - unlike altitude_m this has deliberately no GPS/VFR_HUD
+        fallback: those carry a zero-filled relative_alt when the baro is
+        dead, which would turn a baro-differential readout into a lie
+        instead of "---"."""
+        if self._fresh(self.alt_ts):
+            return self.alt_relative_m
         return None
 
     @property
@@ -262,9 +279,12 @@ def heartbeat(mav):
 class TelemetryHub:
     """Distributes messages from a telemetry source to the HUD snapshot and QGC."""
 
-    def __init__(self, qgc_host="127.0.0.1", qgc_port=14550, system_id=1, calibrator=None):
+    def __init__(self, qgc_host="127.0.0.1", qgc_port=14550, system_id=1, processors=()):
         self._state = TelemetrySnapshot()
-        self._calibrator = calibrator  # altimeter.BaroCalibrator or None
+        # message processors (home.HomePoint, altimeter.BaroCalibrator) - each
+        # observes the stream and may patch the message before it reaches the
+        # snapshot and QGC; home first, it is what the calibrator locks on
+        self._processors = tuple(processors)
         self._lock = threading.Lock()
         self._conn = mavutil.mavlink_connection(
             f"udpout:{qgc_host}:{qgc_port}",
@@ -278,8 +298,8 @@ class TelemetryHub:
         return self._conn.mav
 
     def publish(self, msg):
-        if self._calibrator is not None:
-            msg = self._calibrator.process(msg)
+        for processor in self._processors:
+            msg = processor.process(msg)
         now = time.monotonic()
         with self._lock:
             apply_message(self._state, msg, now)
