@@ -129,6 +129,9 @@ Rules and gotchas:
   is a poor fuel gauge on a flat Li-ion curve; integrated mAh is the better
   flight-planning signal. If the power path is ever opened up for this, the
   per-cell voltages then serve mainly as the imbalance alarm and hard floor.
-- Update `doc/parts/README.md` (Battery monitoring section — fix the 47k/15k
+- ~~Update `doc/parts/README.md` (Battery monitoring section — fix the 47k/15k
   divider) and `doc/architecture.md` (Power architecture) when this is
-  implemented.
+  implemented.~~ Done; the pack itself is documented in
+  `doc/parts/battery-samsung-30q.md` (Samsung INR18650-30Q 3S1P), which also
+  holds the discharge limits, the measured full-throttle sag and what the
+  outstanding second calibration point needs.

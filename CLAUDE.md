@@ -195,9 +195,21 @@ decisions. Keep it updated when the design evolves.
   a cell < 3.2 V or Δ > 150 mV blinks the line at 2 Hz. The emulator feeds a
   fake draining pack. The divider harness is built and verified end-to-end;
   `battery.cpp` carries a one-point scale calibration (2026-08-23, full pack
-  vs multimeter — channels read 2-2.7 % high on nominal ratios). NOT done:
-  the second calibration point on a near-empty pack (offsets; plan:
-  `doc/plans/2026-08-10-battery-cell-monitoring.md`).
+  vs multimeter — channels read 2-2.7 % high on nominal ratios); a repeat on
+  2026-08-29 confirmed it to 0.08-0.16 % per node but could not yield the
+  offsets — both points sit at a full pack, ~1 % apart, so the two-point fit
+  is singular (node 3 came out slope 6.02, offset +996 mV). The pack is a
+  **3S1P Samsung INR18650-30Q** (unprotected cells, 15 A/cell continuous,
+  `doc/parts/battery-samsung-30q.md`); land at 3.5 V/cell resting, never
+  below 3.0. Full throttle costs **~0.3-0.36 V/cell** of indicated voltage
+  (measured on the airframe from the balance taps, which carry no current),
+  so the HUD's 3.2 V alarm fires with ~a quarter of the pack left — state of
+  charge must be read at low throttle, and the alarm should be gated on
+  throttle once throttle control exists. NOT done: the second calibration
+  point, deliberately deferred until after the first real flight, to be taken
+  on the discharged pack (needs a ≥20 % voltage span, the DMM in its
+  highest-resolution range, and raw `cellMv` averaged ±15 s from the log,
+  not the HUD; plan: `doc/plans/2026-08-10-battery-cell-monitoring.md`).
 - Flight logging is live (`cockpitview/flightlog.py`, plan
   `doc/plans/2026-08-25-telemetry-logging.md`): every cocpitView session
   with the real link writes `cocpitView/logs/<timestamp>.cvlog` (gitignored;
@@ -258,7 +270,8 @@ decisions. Keep it updated when the design evolves.
   `python -m cockpitview.flightlog yawcal FILE.cvlog` (same gate/window/filter
   objects as the live path), and `k` wants cross-checking against reciprocal
   legs.
-- Next steps: second battery calibration point; joystick input in
+- Next steps: second battery calibration point (after the first real flight,
+  on the discharged pack); joystick input in
   cocpitView (the command channels are already on the wire, neutral for
   now); servos + a real failsafe action on the air side; fly the yaw
   calibration and measure its two provisional constants; mount the pitot on

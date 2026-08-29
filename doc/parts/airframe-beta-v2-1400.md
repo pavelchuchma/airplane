@@ -25,7 +25,7 @@
 | Motor | C2623-1950 brushless outrunner (1950 = KV per RAY naming) |
 | Propeller | fixed 6×4" |
 | ESC | **[RAY G2 R-20B](esc-ray-g2-r-20b.md)** — 20 A, 5 V/2 A linear BEC |
-| Stock battery | LiPo 3S 11.1 V 1300 mAh 20C; bay fits up to ~2200 mAh 3S (this project flies a 3S Li-ion pack — see `architecture.md`) |
+| Stock battery | LiPo 3S 11.1 V 1300 mAh 20C; bay fits up to ~2200 mAh 3S (this project flies a [3S1P Samsung INR18650-30Q Li-ion pack](battery-samsung-30q.md)) |
 
 ## Controls (stock RTF configuration)
 

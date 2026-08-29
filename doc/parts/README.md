@@ -15,6 +15,7 @@ full specs, pinout and wiring notes.
 | <img src="img/mpu6050-gy521.jpg" width="120"> | [MPU-6050 6DOF IMU (GY-521)](mpu6050-gy521.md) — **currently wired in** | Gyro + accelerometer (no compass) | I2C @ 0x68 (AD0 → 0x69), VCC 3.3–5 V | 16-bit, onboard DMP quaternions; ⚠️ same 0x68 default as GY-91's MPU-9250 |
 | <img src="img/airframe-beta-v2-1400.jpg" width="120"> | [Beta V2 1400 M1 airframe (Pelikan)](airframe-beta-v2-1400.md) | The airplane — 1.42 m EPP trainer, RTF donor | 4 servos + brushless motor; stock RadioLink RC gets replaced by the ESP32 link | 142 cm span, 0.65–0.72 kg, 3S, C2623-1950 motor, 6×4" prop |
 | <img src="img/esc-ray-g2-r-20b.jpg" width="120"> | [RAY G2 R-20B 20 A brushless ESC](esc-ray-g2-r-20b.md) | Motor drive + 5 V servo power | PWM throttle in; BEC 5 V/2 A out | 20 A (25 A burst), 2–3S; **linear** BEC — servos only, never the ESP32; motor cut 2 s after PWM loss |
+| — | [Samsung INR18650-30Q 3S Li-ion pack](battery-samsung-30q.md) | The flight battery — 3S1P, 3000 mAh | XT60 + 3S JST-XH balance lead | 12.6 V full, 15 A continuous per cell, **unprotected**; land at 3.5 V/cell resting, never below 3.0 V |
 | <img src="img/rc-rx-radiolink-r8ef.jpg" width="120"> | [RadioLink R8EF 8-ch receiver](rc-rx-radiolink-r8ef.md) — **replaced by the ESP32 link** | Stock RC receiver of the donor model, kept as fallback | SBUS + PPM + PWM out; 4.8–10 V supply | 2.4 GHz FHSS; blue LED mode: CH1 = SBUS, CH2 = PPM, CH3–8 PWM; signal level unspecified — inverter/level shifter before an ESP32 pin |
 | <img src="img/rc-tx-radiolink-t8fb.jpg" width="120"> | [RadioLink T8FB BT 8-ch transmitter](rc-tx-radiolink-t8fb.md) — **replaced by the ESP32 link** | Stock RC transmitter of the donor model, kept as fallback | 2.4 GHz FHSS 67-ch hopping; setup via Android app/PC (no onboard UI) | Mode 1; R8EF failsafe is configured *here* (per-channel F/S); rear serial port streams live channel data (undocumented protocol) |
 
@@ -48,7 +49,7 @@ Common ground for everything.
 
 ## Power distribution (3S Li-ion pack)
 
-Pack: 3S Li-ion, 9.0–12.6 V (nominal ~10.8 V). Buck (switching) converters for the 5 V rails — no linear regulators from pack voltage (a linear reg from 11 V to 5 V wastes ~55% as heat; a buck is 90%+ efficient). The video chain takes pack voltage directly (see below).
+Pack: **3S1P [Samsung INR18650-30Q](battery-samsung-30q.md)**, 12.6 V full / ~11.1 V nominal, 3000 mAh (~33 Wh). The 9.0 V lower bound quoted below is the absolute floor, not a flight target — land at 3.5 V/cell resting (10.5 V); see that doc for the discharge limits and the full-throttle sag. Buck (switching) converters for the 5 V rails — no linear regulators from pack voltage (a linear reg from 11 V to 5 V wastes ~55% as heat; a buck is 90%+ efficient). The video chain takes pack voltage directly (see below).
 
 ```
 3S Li-ion (9–12.6 V)
@@ -93,7 +94,10 @@ from its siblings (HUD blinks below 3.2 V/cell or Δ > 150 mV). The sense
 harness (Y-tap off the balance lead) is built and verified end-to-end; the
 per-channel constants in `battery.cpp` carry a one-point scale calibration
 (full pack vs multimeter, 2026-08-23) and zero offsets — the second point on
-a near-empty pack is still to be measured.
+a discharged pack is still to be measured, planned after the first real
+flight. See [the pack's own doc](battery-samsung-30q.md) for what that
+measurement needs, and for the ~0.3 V/cell full-throttle sag that makes the
+3.2 V alarm fire with a quarter of the pack still left.
 
 ### Shopping list (not yet ordered)
 

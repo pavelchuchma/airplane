@@ -209,10 +209,21 @@ feeds logged frames through the same publishing path as the live link.
 
 ## Power architecture (airplane, planned)
 
-Source: **3S Li-ion pack** (9.0–12.6 V). All rails share a common ground,
-wired star-style from the converter outputs. Per-cell voltages are monitored
-from the balance connector via ADC1 dividers (see `doc/parts/README.md`,
-Battery monitoring).
+Source: **3S1P Samsung INR18650-30Q Li-ion pack** (12.6 V full, ~11.1 V
+nominal, 3000 mAh / ~33 Wh; `doc/parts/battery-samsung-30q.md`). All rails
+share a common ground, wired star-style from the converter outputs. Per-cell
+voltages are monitored from the balance connector via ADC1 dividers (see
+`doc/parts/README.md`, Battery monitoring).
+
+The cells are **unprotected** and the ESC's adjustable cutoff is the only
+automatic protection in the airplane. Two operating facts belong here rather
+than in the parts doc, because they shape what the telemetry can tell you:
+the routine landing target is **3.5 V/cell resting** (~20–25 % left; the
+9.0 V figure that used to head this section is the absolute floor, not a
+target), and full throttle costs **~0.3–0.36 V/cell** of indicated voltage
+(measured on the airframe from the balance taps, which carry no current), so
+state of charge must be read at low throttle. The HUD's 3.2 V/cell alarm
+otherwise fires with roughly a quarter of the pack remaining.
 
 ```
 3S Li-ion (9.0–12.6 V)
