@@ -258,15 +258,28 @@ def header(path):
     raise ValueError(f"{path}: empty log")
 
 
+# Up to v4 the air side sent its internal FLU yaw straight onto the wire, so
+# the heading ran counter-clockwise - mirrored against every consumer of it
+# (HUD, QGC, yawcal.py). v5 flips it at the source; here we flip the old logs
+# so that one analysis path serves both. Only yaw is affected: roll and pitch
+# carry the usual aerospace signs in FLU too.
+_MIRRORED_YAW_MAX_VERSION = 4
+_MIRRORED_YAW_FIELDS = ("yaw", "yawspeed")
+
+
 def upgrade(frame, version):
     """Maps a frame decoded by a log's own layout onto the current Telemetry
     (or Command) namedtuple: missing fields become NaN, and this is the one
     place for version-dependent semantic fixes (re-scaled fields, sign
-    flips...). Identity until the first such change."""
+    flips...)."""
     target = protocol.Telemetry if frame.msg_id == protocol.MSG_TELEMETRY else protocol.Command
     if type(frame)._fields == target._fields:
-        return target._make(frame)
-    return target._make(getattr(frame, name, math.nan) for name in target._fields)
+        out = target._make(frame)
+    else:
+        out = target._make(getattr(frame, name, math.nan) for name in target._fields)
+    if out.msg_id == protocol.MSG_TELEMETRY and version <= _MIRRORED_YAW_MAX_VERSION:
+        out = out._replace(**{name: -getattr(out, name) for name in _MIRRORED_YAW_FIELDS})
+    return out
 
 
 class MessageDecoder:

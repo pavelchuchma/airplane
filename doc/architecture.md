@@ -62,7 +62,16 @@ out to carry an MPU-6500, not the advertised MPU-9250 — there is no
 magnetometer, so yaw is gyro-integration only: its datum is whatever heading
 the aircraft booted on, and it drifts from there. It is calibrated in flight
 against the GPS (`cockpitview/yawcal.py`, see below), which avoids compass
-calibration and the airframe's magnetic interference entirely. The Quescan
+calibration and the airframe's magnetic interference entirely.
+
+The IMU's body frame is X-forward, **Y-left**, Z-up (FLU) — forced by the
+mounting (board upside down) and the requirement that the sensor→body
+transform stay a proper rotation. Roll and pitch carry the usual aerospace
+signs there, but a positive rotation about Z is a *left* turn, so the air
+side flips yaw and yawRate once, where it fills telemetry, and the wire
+carries a clockwise heading (protocol v5). Up to v4 it did not, and the
+mirrored heading reached the HUD, QGC and the wind-triangle fit alike —
+`flightlog.upgrade()` corrects logs of those versions on read. The Quescan
 G10A-F30 GPS (u-blox M10) is on
 UART2: the firmware configures it at every boot (flash-less chip — 5 Hz nav
 rate, airborne dynamic model, RMC+GGA only) and appends position/groundspeed/

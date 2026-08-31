@@ -14,7 +14,7 @@ from cockpitview import flightlog, protocol
 
 
 def telemetry_payload(version=protocol.PROTOCOL_VERSION, time_boot_ms=1000, ias=12.5, flags=0):
-    """A TelemetryMessage with recognisable values (only the v4 layout)."""
+    """A TelemetryMessage with recognisable values (the current layout)."""
     fields = protocol.Telemetry(
         msg_id=protocol.MSG_TELEMETRY, version=version, flags=flags, sats=7, time_boot_ms=time_boot_ms,
         roll=0.1, pitch=-0.2, yaw=1.5, rollspeed=0.0, pitchspeed=0.0, yawspeed=0.0,
@@ -117,6 +117,27 @@ class WriteReadRoundTrip(unittest.TestCase):
         self.assertAlmostEqual(frame.ias_mps, 9.5, places=5)
         self.assertTrue(math.isnan(frame.roll))
         self.assertEqual(frame._fields, protocol.Telemetry._fields)
+
+    def _yaw_of_log(self, protocol_version):
+        """Writes a one-frame log claiming `protocol_version` (the layout is
+        byte-identical across v4/v5) and returns the decoded yaw/yawspeed."""
+        path = self.dir / f"v{protocol_version}.cvlog"
+        self.dir.mkdir(exist_ok=True)
+        hdr = dict(flightlog.build_header(0.0, {}), protocol_version=protocol_version)
+        with open(path, "wb") as f:
+            f.write(flightlog.pack_record(0.0, flightlog.TYPE_HEADER, json.dumps(hdr).encode()))
+            f.write(flightlog.pack_record(0.02, flightlog.TYPE_DOWN, telemetry_payload(version=protocol_version)))
+        (_, frame), = flightlog.telemetry_frames(path)
+        return frame.yaw, frame.yawspeed
+
+    def test_v4_mirrored_yaw_is_flipped_on_read(self):
+        """Up to v4 the air side logged its internal FLU yaw, which runs
+        counter-clockwise - the opposite of the heading every consumer
+        assumes. upgrade() flips it so one analysis path serves both."""
+        self.assertEqual(self._yaw_of_log(4), (-1.5, -0.0))
+
+    def test_v5_yaw_passes_through(self):
+        self.assertEqual(self._yaw_of_log(5), (1.5, 0.0))
 
     def test_no_frame_no_file(self):
         log = flightlog.FlightLog(self.dir)

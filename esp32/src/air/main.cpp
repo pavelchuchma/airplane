@@ -82,14 +82,28 @@ constexpr float kComplementaryAlpha = 0.98f;          // gyro vs. accelerometer 
 
 // Mounted orientation. The GY-91 sits in the airframe rotated 180 deg about
 // the body X axis (upside down, sensor X still forward), so Y and Z readings
-// (accel and gyro alike) are negated into the X-forward/Y-right/Z-up body
-// frame the attitude math below assumes. Applied inside mpuReadRaw(), i.e.
-// everything downstream - including the gyro bias calibration - already
-// works in body frame. The signs must stay a proper rotation (determinant
-// +1): a mirror (e.g. Z alone) puts gyro and accel in opposite frames on
-// one axis and the complementary filter degrades to its slow accel path -
-// seconds of rubbery lag, verified on the airframe 2026-08-25.
-constexpr int8_t kAxisSign[3] = {1, -1, -1};  // X, Y, Z: sensor -> body frame
+// (accel and gyro alike) are negated into the body frame the attitude math
+// below assumes. Applied inside mpuReadRaw(), i.e. everything downstream -
+// including the gyro bias calibration - already works in body frame. The
+// signs must stay a proper rotation (determinant +1): a mirror (e.g. Z
+// alone) puts gyro and accel in opposite frames on one axis and the
+// complementary filter degrades to its slow accel path - seconds of rubbery
+// lag, verified on the airframe 2026-08-25.
+//
+// That body frame is X-forward, Y-LEFT, Z-up (FLU). It cannot be Y-right:
+// the sensor's own frame is right-handed and a determinant +1 rotation
+// keeps it that way, and with X forward and Z up, right-handedness forces
+// Y = Z x X = left. An earlier comment here claimed Y-right, which is what
+// hid the consequence for a whole flight: roll and pitch come out with the
+// usual aerospace signs in FLU (positive = right wing down / nose up), but
+// `yaw += gz*dt` counts positive counter-clockwise, i.e. a LEFT turn. The
+// reported heading therefore ran backwards, all the way through the HUD,
+// QGC and the wind-triangle fit in yawcal.py, which silently absorbed the
+// mirrored heading into a bogus 17 m/s wind (2026-08-29_123339.cvlog, the
+// flight that ended in a spin). The flip to a clockwise heading is applied
+// once, where telemetry is filled - not here, so that the frame stays a
+// consistent FLU triad for the filter.
+constexpr int8_t kAxisSign[3] = {1, -1, -1};  // X, Y, Z: sensor -> body frame (FLU)
 
 // Level trim: residual mounting misalignment of the board vs. the airframe,
 // measured with the airplane at rest in its ideal level attitude and the
@@ -922,10 +936,13 @@ void loop() {
   t.timeBootMs = nowMs;
   t.rollRad = s.roll;
   t.pitchRad = s.pitch;
-  t.yawRad = s.yaw;
+  // Body frame is X-forward/Y-left/Z-up, so a positive rotation about Z is a
+  // LEFT turn; the wire (and MAVLink behind it) wants a clockwise heading.
+  // Roll and pitch need no such flip - see the frame note above.
+  t.yawRad = -s.yaw;
   t.rollRate = s.rollRate;
   t.pitchRate = s.pitchRate;
-  t.yawRate = s.yawRate;
+  t.yawRate = -s.yawRate;
   t.baroAltM = s.baroAltM;
   t.climbMps = s.climbMps;
   t.diffPressPa = s.diffPressPa;

@@ -6,7 +6,7 @@
 
 #include <stdint.h>
 
-constexpr uint8_t PROTOCOL_VERSION = 4;
+constexpr uint8_t PROTOCOL_VERSION = 5;
 
 // Both radios must sit on the same channel; set explicitly at bring-up.
 constexpr uint8_t WIFI_CHANNEL = 1;
@@ -31,6 +31,13 @@ struct __attribute__((packed)) TelemetryMessage {
   uint8_t flags;    // TELEM_FLAG_*
   uint8_t sats;
   uint32_t timeBootMs;
+  // Attitude in the aerospace sense: roll positive right wing down, pitch
+  // positive nose up, yaw positive *clockwise* seen from above (a compass
+  // heading with an arbitrary datum, not a magnetic one). The air side's
+  // internal body frame is X-forward/Y-left/Z-up, where yaw runs the other
+  // way, so it flips the sign of yaw and yawRate on the way onto the wire -
+  // see the frame note in src/air/main.cpp. v4 and older shipped the
+  // unflipped value; flightlog.upgrade() fixes those logs on read.
   float rollRad, pitchRad, yawRad;     // attitude [rad]
   float rollRate, pitchRate, yawRate;  // body rates [rad/s]
   float baroAltM;                      // m relative to boot location, NAN = no baro

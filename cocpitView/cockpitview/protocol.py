@@ -9,6 +9,13 @@ Frame layout on the ground bridge's serial link:
 
     frame = COBS(payload || crc16_be(payload)) || 0x00
 
+Attitude sign conventions on the wire (v5 onwards): roll positive right
+wing down, pitch positive nose up, yaw a *clockwise* heading with an
+arbitrary datum. The air side's internal frame is X-forward/Y-left/Z-up,
+where yaw runs counter-clockwise, so it flips yaw and yawspeed before
+sending. v4 and older shipped the unflipped (mirrored) heading -
+flightlog.upgrade() corrects those logs on read.
+
 Two invariants the flight log (flightlog.py) relies on:
 
   - msgId and version are the first two bytes of every message and never
@@ -21,7 +28,7 @@ Two invariants the flight log (flightlog.py) relies on:
 import collections
 import struct
 
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 
 MSG_TELEMETRY = 0x01
 MSG_COMMAND = 0x02
