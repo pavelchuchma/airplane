@@ -21,11 +21,18 @@ decisions. Keep it updated when the design evolves.
 ## Commands
 
 - Firmware build/upload: `cd esp32 && pio run -e air -t upload` (or `-e ground`)
-- Flashing the air board is done over USB with the board mounted in the
-  airplane, so **disconnect the flight battery first** — USB power and the
-  battery/BEC must never be live at the same time. Booting like that prints
-  `# battery absent - data nan for this flight` (the balance lead is off with
-  the pack); that is the expected USB-powered state, not a regression.
+- USB power and the battery/BEC must never be live at the same time — but
+  this is **enforced mechanically**: the two connectors physically cannot be
+  plugged in at once. So it is never a precondition to check or ask about
+  before flashing; if USB is in, the battery is out, by construction.
+  A USB-powered boot therefore always prints `# battery absent - data nan for
+  this flight` (the balance lead goes with the pack). Expected, not a
+  regression.
+- Which sensors report `absent` at boot depends on where the board is. Out of
+  the airframe it is a bare devkit and *everything* reads absent (I2C
+  `i2cWriteReadNonStop` error −1 on every address, GPS silent on UART2) — that
+  is the bench state, not damage. Only judge sensor health with the board
+  wired into the airplane.
 - Both devkits have clone CP2102s with the same USB serial number; boards are
   identified by their factory MAC (`custom_board_mac` in platformio.ini,
   probed via ROM bootloader — see `esp32/tools/board_id.py`). Boards may be
@@ -124,9 +131,18 @@ decisions. Keep it updated when the design evolves.
   tubing, never by negating in the driver), and the **±1 psi range is
   verified** against a 981 Pa water column, so `kPressureRangePsi` is not to
   be touched. What is *not* solved is **position error**: on a bicycle the
-  IAS read ~30 % below GPS, entirely from where the static holes sat. That
-  correction belongs to the installation, must be measured on the airframe
-  (two reciprocal legs against GPS), and goes in its own constant.
+  IAS read ~30 % below GPS, entirely from where the static holes sat — but
+  that number does **not** carry over to the airframe. First flight data
+  (2026-08-29, 12 s of climb-out, 58 GPS epochs, IAS against wind-corrected
+  GPS TAS): IAS/TAS = 0.921 ± 0.039, i.e. ~10 % low after the density
+  correction, and yawcal's independent `k` from the same flight says 4 % low.
+  So the installed error is single-digit-to-10 %, not 30 %, and the constant
+  will be small. Provisional — 12 s and one wind estimate is not a
+  calibration. That correction belongs to the installation, must be measured
+  on the airframe (two reciprocal legs against GPS), and goes in its own
+  constant. Watch the **zero** as well: it read +9.9 Pa (sd 5.2) standing
+  still, part wind on the tube but not all — harmless at cruise (2-3 % of
+  IAS), 13 % of dP near stall speed, where it matters most.
   `doc/parts/pitot-ms4525do.md` has the mounting analysis (the sweet spot is
   c/4 ahead of the wing leading edge, where upwash cancels the C_L
   dependence — further forward is worse) and the calibration procedure.
@@ -181,7 +197,20 @@ decisions. Keep it updated when the design evolves.
   `baro AMSL − terrain(GPS position)`. QGC gets the calibrated altitude too
   (ALTITUDE.altitude_amsl + GLOBAL_POSITION_INT.alt); raw GPS altitude stays
   in GPS_RAW_INT.
-- Per-cell battery monitoring is implemented (protocol v4, 90 B telemetry):
+- The IMU body frame is X-forward, **Y-left**, Z-up (FLU), not "Y-right" as
+  `main.cpp` claimed until 2026-08-29: the sensor frame is right-handed and
+  `kAxisSign` is a proper rotation, so X-forward + Z-up forces Y-left. Roll
+  and pitch carry the usual aerospace signs there; yaw does not — a positive
+  rotation about Z is a *left* turn. Up to protocol v4 that mirrored heading
+  went straight onto the wire and through the HUD, QGC and yawcal alike. **v5
+  flips `yawRad`/`yawRate` once, where telemetry is filled** — not in
+  `kAxisSign` (that must stay det +1) and not in the filter (which needs a
+  consistent FLU triad). `flightlog.upgrade()` negates yaw/yawspeed for v ≤ 4
+  so old logs stay comparable. Caught only by regressing reported yaw against
+  GPS course on the first flight log (slope −1.056, rms 5.9°); the emulator
+  could never catch it, because it generates yaw as a compass heading and so
+  was self-consistent.
+- Per-cell battery monitoring is implemented (protocol v5, 90 B telemetry):
   `src/air/battery.cpp` reads the 3S balance nodes via ADC1 dividers
   (C1 10k/10k → GPIO35, C2 28k/10k → GPIO34, C3 56k/10k → GPIO39, 100 nF per
   pin, all under the 11 dB linear ceiling) at 10 Hz in `sensorTask`,
@@ -264,12 +293,19 @@ decisions. Keep it updated when the design evolves.
   and reports a deliberately wrong yaw (a windless emulator makes
   `COG == heading`, the one case the naive method gets right) and sends a
   realistic `h_acc` — MAVLink's default 0 means "unknown" and kept both
-  `home.py` and this switched off in emulated sessions. **NOT measured on an
-  airframe:** every constant is provisional; `GPS_VELOCITY_LAG_S` and the
-  drift PSD need a real log via
-  `python -m cockpitview.flightlog yawcal FILE.cvlog` (same gate/window/filter
-  objects as the live path), and `k` wants cross-checking against reciprocal
-  legs.
+  `home.py` and this switched off in emulated sessions. First airframe data
+  (`2026-08-29_123339.cvlog`, 23 s of flight — one solvable window, cond 5.9):
+  with the v5 yaw sign it fits wind 291°/2.2 m/s and `k = 1.04` at rms 1.74 —
+  the direction cross-checks to 2° against the wind derived independently
+  from the drift of the crash spin's ground track (293°/3.2 m/s). The same
+  window *before* the sign fix returned wind 155°/17.2 m/s and `k = 0.71` at
+  rms 2.70, i.e. **it passed every gate** (cond ≤ 10, rms < 3.0, k in bounds)
+  while absorbing the mirrored heading into a fictitious 17 m/s wind. Lesson:
+  the gates test geometry and fit quality, neither of which notices a sign
+  error — the honest cross-check is `k`, which has a physical band (1.0–1.4)
+  the bogus fit fell outside of while still inside `K_BOUNDS`. Still
+  provisional: `GPS_VELOCITY_LAG_S` and the drift PSD need a longer flight
+  (one window measures neither), and `k` wants reciprocal legs.
 - Next steps: second battery calibration point (after the first real flight,
   on the discharged pack); joystick input in
   cocpitView (the command channels are already on the wire, neutral for
