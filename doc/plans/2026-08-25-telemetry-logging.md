@@ -266,14 +266,13 @@ window + `serial_open`; `_send_commands`: the command payload; `_run`:
 
 ## Follow-ups (not now, but the design keeps them cheap)
 
-- **Replay** — `ReplaySource(hub, path)` as a third source
-  (`--replay file.cvlog`): plays `DOWN` records by their timestamps into the
-  **same** `_publish_telemetry` path as the live source (requires extracting
-  `_publish_*` from `EspNowSource` into a standalone `TelemetryPublisher`).
-  Gives replay into the HUD **and** QGC at once, and always through the
-  current processing (a better calibrator → better replay of an old flight).
-  An offline `cvlog → tlog` converter for QGC's "Replay Flight Data" (8 B
-  big-endian µs + msgbuf per message) is ~20 lines if ever needed.
+- **Replay** — done, 2026-09-10: `--replay file.cvlog`
+  (`cockpitview/replay_source.py`, plan
+  `doc/plans/2026-09-10-flightlog-replay.md`). `_publish_*` moved out of
+  `EspNowSource` into `publisher.TelemetryPublisher` as foreseen, so the
+  replay feeds the HUD **and** QGC through the current processing. An
+  offline `cvlog → tlog` converter for QGC's "Replay Flight Data" (8 B
+  big-endian µs + msgbuf per message) is still ~20 lines if ever needed.
 - **HUD `REC` indicator** — `FlightLog.bytes_written` into the snapshot,
   so a full disk or an unwritable directory is visible in the field.
 - **GPS vs. IAS calibration** — `df = flightlog.to_dataframe(...)`, filter

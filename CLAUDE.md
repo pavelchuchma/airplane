@@ -263,8 +263,26 @@ decisions. Keep it updated when the design evolves.
   touching the app. `_read` now does `ser.read(max(1, ser.in_waiting))` —
   the old `read(256)` quantized timestamps (and HUD latency) to ~50 ms
   batches — verified on the bench 2026-08-27: 5996 frames, dt median
-  20.0 ms, p95 22.4 ms. Tests in `cocpitView/tests/` (stdlib unittest). NOT
-  done: the replay source.
+  20.0 ms, p95 22.4 ms. Tests in `cocpitView/tests/` (stdlib unittest).
+- Flight replay is live (`--replay logs/<file>.cvlog`,
+  `cockpitview/replay_source.py`, plan
+  `doc/plans/2026-09-10-flightlog-replay.md`): the logged downlink payloads
+  are paced by their own timestamps into `publisher.TelemetryPublisher` —
+  the `_publish_*` methods were extracted out of `espnow_source.py`, so the
+  live link and the replay share one MAVLink path and an old flight is
+  re-flown on today's HUD, calibrators and QGC. Decoding goes through the
+  log's header + `flightlog.upgrade()` (a v4 log replays with its mirrored
+  yaw corrected). `--replay-start MM:SS` (the times `flightlog info` prints)
+  jumps into the flight and fast-forwards the run-up through the processors
+  with the UDP forward off, so home/baro/yaw hold at the jump-in point;
+  `--replay-cold` drops it instead (the only way to exercise a mid-flight
+  start), `--replay-speed`, `--replay-end`, `--replay-max-gap` (default 3 s
+  — the logs contain 200 s silences; only the *wait* is capped, log time
+  jumps the whole gap so yawcal still sees the true dt). The calibrators run
+  on the log's clock, not the viewer's (`HomePoint`/`YawCalibrator` take
+  `clock=`) — a replay never writes a `.cvlog` of its own. The HUD shows the
+  position in the log as `00:02:59.9` bottom centre (only in replay), which
+  is the number to feed back to `--replay-start`.
 - Heading is calibrated against the GPS, not a compass
   (`cockpitview/yawcal.py`, plan `doc/plans/2026-08-27-yaw-gps-calibration.md`).
   `COG − yaw` is deliberately **not** used — it is off by the wind drift

@@ -49,11 +49,16 @@ Data flows:
   liveness heartbeat, serial open/loss) into `cocpitView/logs/*.cvlog`
   (`cockpitview/flightlog.py`). The PC is the logging point because it
   already sees everything; there is no on-air storage.
+- **Replay:** `--replay FILE.cvlog` plays the recorded downlink payloads
+  back through the same publisher the live link uses
+  (`cockpitview/replay_source.py` → `publisher.py`), so an old flight is
+  re-flown on today's HUD, calibrators and QGC.
 
 ## Current vs. target state
 
 cocpitView is already the hub: it reads telemetry itself (USB serial from the
-air ESP32 by default, or a built-in flight-profile emulator via `--emulator`)
+ground bridge by default, a built-in flight-profile emulator via `--emulator`,
+or a recorded flight via `--replay`)
 and feeds QGC over MAVLink/UDP. The standalone `mpu6050_*.py` scripts are
 retired. The air firmware reads the GY-91 board: attitude from the IMU and
 altitude/vario from the BMP280 barometer (relative to the boot location,
@@ -213,8 +218,21 @@ on the first telemetry frame and flushes once per second (a crash loses
 `python -m cockpitview.flightlog info|csv|events FILE`, or
 `flightlog.to_dataframe()` with pandas — this is where the pitot position
 error (GPS vs. IAS on reciprocal legs) and the second battery calibration
-point will come from. Replay into the HUD/QGC is a planned third source that
-feeds logged frames through the same publishing path as the live link.
+point will come from.
+
+`--replay FILE.cvlog` is the third telemetry source
+(`cockpitview/replay_source.py`, plan
+`doc/plans/2026-09-10-flightlog-replay.md`): it paces the logged downlink
+payloads by their own timestamps into `publisher.TelemetryPublisher`, the
+same code the live link publishes through, so the HUD, the home point, the
+altimeter, the yaw calibration and QGC all re-run on the old flight as they
+are *today*. Frames are decoded by the log's header and passed through
+`flightlog.upgrade()`, so a v4 log replays with its mirrored yaw corrected.
+`--replay-start MM:SS` jumps into the flight, fast-forwarding the run-up
+through the processors (with the UDP forward suppressed) so home and the
+calibrations hold at the jump-in point; `--replay-cold` skips it instead,
+which is the only way to exercise a mid-flight start. The calibrators run on
+the log's clock, not the viewer's.
 
 ## Power architecture (airplane, planned)
 

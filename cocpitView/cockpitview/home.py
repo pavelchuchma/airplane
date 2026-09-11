@@ -40,8 +40,12 @@ class HomePoint:
     TelemetryHub processor chain and passes every message through
     untouched - unlike BaroCalibrator it only observes."""
 
-    def __init__(self, log=None):
+    def __init__(self, log=None, clock=time.monotonic):
         self._log = log  # flightlog.FlightLog or None; the lock is PC-side state the log can't recompute
+        # injectable so a replay measures the baro freshness in log time
+        # (replay_source.py); a slowed-down replay would otherwise find
+        # every baro sample older than INPUT_FRESH_S and never lock
+        self._clock = clock
         self._fix = None  # (lat_deg, lon_deg, baro_rel_m), None until locked
         self._samples = []
         self._sinks = []
@@ -66,7 +70,7 @@ class HomePoint:
         if mtype == "ALTITUDE":
             if not math.isnan(msg.altitude_relative):
                 self._baro_rel_m = msg.altitude_relative
-                self._baro_ts = time.monotonic()
+                self._baro_ts = self._clock()
         elif mtype == "GPS_RAW_INT":
             self._fix_type = msg.fix_type
             h_acc = getattr(msg, "h_acc", 0)  # mm, 0 = unknown
@@ -82,7 +86,7 @@ class HomePoint:
             or self._hacc_m is None  # no error estimate -> don't trust the fix
             or self._hacc_m > MAX_HACC_M
             or groundspeed > MAX_GROUNDSPEED_MPS
-            or time.monotonic() - self._baro_ts > INPUT_FRESH_S
+            or self._clock() - self._baro_ts > INPUT_FRESH_S
         ):
             return
         lat_deg, lon_deg = msg.lat / 1e7, msg.lon / 1e7

@@ -472,6 +472,7 @@ def _yawcal(path):
     print("-" * len(header_row))
 
     frames = telemetry_frames(path)
+    t0 = hdr["t_mono0"]  # print log-relative times, like `info` and `events`
     rows = accepted = 0
     for fit, offset_deg, sigma_deg in yawcal.replay(frames, lambda f: flag_columns(hdr, f.flags)):
         rows += 1
@@ -480,7 +481,7 @@ def _yawcal(path):
         wind = f"{wind_from:03.0f}/{math.hypot(fit.wind_n, fit.wind_e):4.1f}"
         cond = f"{fit.cond:6.1f}" if fit.cond < 1e4 else "  1e+4"
         print(
-            f"{fit.t_mid:8.1f}  {fit.n:4d} {cond} {fit.concentration:5.3f} {fit.residual_rms:5.2f} "
+            f"{fit.t_mid - t0:8.1f}  {fit.n:4d} {cond} {fit.concentration:5.3f} {fit.residual_rms:5.2f} "
             f"{math.degrees(fit.delta):7.2f} {fit.k:5.3f} {wind:>11}  "
             f"{'   ----' if offset_deg is None else f'{offset_deg:7.2f}'} "
             f"{'  ----' if sigma_deg is None else f'{sigma_deg:6.2f}'}  {fit.reject or ''}"

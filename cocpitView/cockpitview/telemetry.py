@@ -84,6 +84,11 @@ class TelemetrySnapshot:
     # the wind and the trust in the heading datum. None without a calibrator
     yaw_cal: object = None
 
+    # filled in by the main loop from replay_source.ReplayClock: position in
+    # the log [s]. None for a live or emulated session, which has no such
+    # thing - the HUD then draws no clock at all
+    replay_time_s: float | None = None
+
     heartbeat_ts: float = field(default=-math.inf)
 
     # ESP-NOW link stats, set by espnow_source.py via TelemetryHub.update_link()
@@ -307,13 +312,18 @@ class TelemetryHub:
         """MAVLink encoder for sources: hub.publish(hub.mav.attitude_encode(...))."""
         return self._conn.mav
 
-    def publish(self, msg):
+    def publish(self, msg, forward=True):
+        """`forward=False` runs the message through the processors and the
+        snapshot but keeps it out of the UDP stream - replay_source.py's
+        fast-forward warm-up, where a few thousand frames would arrive at
+        QGC in a burst of no use to anyone."""
         for processor in self._processors:
             msg = processor.process(msg)
         now = time.monotonic()
         with self._lock:
             apply_message(self._state, msg, now)
-        self._conn.mav.send(msg)
+        if forward:
+            self._conn.mav.send(msg)
 
     def update_link(self, rssi_dbm, cmd_loss_pct, telem_loss_pct, failsafe):
         """ESP-NOW link stats for the HUD (no MAVLink counterpart - QGC gets

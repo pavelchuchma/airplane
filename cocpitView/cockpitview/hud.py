@@ -393,6 +393,24 @@ class Hud:
         text = f"BAT {sum(cells_v):.1f} {per_cell} \u0394{delta_mv:d}"
         self._text(surface, text, (self.w - 8, self.h - 6), anchor="bottomright")
 
+    # --------------------------------------------------------- replay clock
+
+    def draw_replay_time(self, surface, t_s):
+        """Position in the log as HH:MM:SS.s, bottom centre - only while
+        replaying (a live session has nothing to count from). Tenths because
+        the interesting parts of a log are seconds long, and the number is
+        the one to quote at --replay-start."""
+        if t_s is None:
+            return
+        hours, rest = divmod(max(0.0, t_s), 3600)
+        minutes, seconds = divmod(rest, 60)
+        self._text(
+            surface,
+            f"{int(hours):02d}:{int(minutes):02d}:{seconds:04.1f}",
+            (self.cx, self.h - 6),
+            anchor="midbottom",
+        )
+
     # ------------------------------------------------------ roll indicator
 
     def draw_roll_indicator(self, surface, roll):
@@ -463,3 +481,4 @@ class Hud:
         self.draw_gps_status(surface, snap.gps_status)
         self.draw_link_status(surface, snap.link_status)
         self.draw_battery_status(surface, snap.battery_cells_v)
+        self.draw_replay_time(surface, snap.replay_time_s)

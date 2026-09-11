@@ -2,7 +2,8 @@
 
 FPV video z USB kamery (5.8G přijímač → "AV TO USB2.0" grabber) s HUD overlayem
 ve stylu F-16 (NAV mód). Telemetrii si aplikace čte sama — defaultně ze
-sériového portu air ESP32, s `--emulator` ze syntetického letového profilu —
+sériového portu ground bridge ESP32, s `--emulator` ze syntetického letového
+profilu, s `--replay` ze zaznamenaného letu (`logs/*.cvlog`) —
 a přeposílá ji jako MAVLink do QGroundControl (UDP, default `127.0.0.1:14550`).
 QGC je tedy jen volitelný downstream konzument; HUD běží i bez něj.
 
@@ -26,6 +27,8 @@ QGC je tedy jen volitelný downstream konzument; HUD běží i bez něj.
 - **stavové řádky** — `GPS 3D 12 ±4M` (vlevo dole), `LNK -72 U2% D0%` a
   `BAT 11.4 3.80/3.79/3.81 Δ20` (vpravo dole; bliká při poklesu článku pod 3.2 V
   nebo rozvážení > 150 mV)
+- **čas v záznamu** (`00:02:59.9` dole na střed) — jen při `--replay`: pozice
+  v logu od jeho začátku, tedy číslo, které se dá vložit do `--replay-start`
 - ztráta telemetrie (>1 s) → blikající `NO TELEMETRY`; chybějící údaje → `---`
 
 ## Setup
@@ -41,13 +44,20 @@ python3 -m venv .venv
 ./run.sh                        # venv python, OTG kamera, telemetrie z air ESP32
 ./run.sh --fullscreen --fov 45  # argumenty se předávají dál
 ./.venv/bin/python -m cockpitview --emulator --no-camera   # HUD nad emulátorem, bez kamery
+./run.sh --replay logs/2026-08-29_123339.cvlog --replay-start 3:15  # přehrání letu
 ```
 
 | Volba | Default | Význam |
 |---|---|---|
 | `--emulator` | — | syntetický letový profil místo čtení air ESP32 |
+| `--replay FILE.cvlog` | — | přehrání zaznamenaného letu místo živé linky (nezapisuje nový log, implikuje `--no-camera`) |
+| `--replay-speed` | 1.0 | násobič rychlosti přehrávání |
+| `--replay-start T` | 0 | skok na čas `SS`/`MM:SS`/`HH:MM:SS` logu (časy z `flightlog info`); to před ním se přetočí přes kalibrátory |
+| `--replay-end T` | — | konec přehrávání |
+| `--replay-cold` | — | část před `--replay-start` zahodit místo přetočení (simuluje start aplikace uprostřed letu) |
+| `--replay-max-gap` | 3 | strop čekání přes výpadek telemetrie [s] (logový čas přeskočí celý) |
 | `--serial-port` | autodetekce | sériový port air ESP32 (default: podle factory MAC z `esp32/platformio.ini`) |
-| `--baud` | 115200 | baud rate sériové linky |
+| `--baud` | 460800 | baud rate sériové linky |
 | `--rate` | 20 | frekvence telemetrie emulátoru [Hz] |
 | `--qgc-host` | 127.0.0.1 | IP adresa QGroundControl pro MAVLink forward |
 | `--qgc-port` | 14550 | UDP port QGroundControl |
@@ -73,9 +83,9 @@ Při prvním spuštění si macOS vyžádá povolení kamery pro terminál
 ## Zapojení telemetrie
 
 ```
-air ESP32 (USB serial, CSV) ──┐
-                              ├──> cockpit view ──MAVLink UDP:14550──> QGroundControl
---emulator (letový profil) ───┘         │
+ground ESP32 (USB, ESP-NOW) ──┐
+--emulator (letový profil) ───┤──> cockpit view ──MAVLink UDP:14550──> QGroundControl
+--replay (logs/*.cvlog) ──────┘         │
                                         └──> HUD (přímo, bez QGC)
 ```
 
@@ -117,6 +127,8 @@ a místo flight path markeru je boresight kříž.
 - `cockpitview/telemetry.py` — TelemetryHub: thread-safe snapshot pro HUD + MAVLink forward do QGC
 - `cockpitview/serial_source.py` — čtení air ESP32 (CSV → ATTITUDE), autodetekce portu, reconnect
 - `cockpitview/emulator_source.py` — syntetická telemetrie z letového profilu (`--emulator`)
+- `cockpitview/publisher.py` — telemetrický rámec → MAVLink; sdílí ho živá linka i replay
+- `cockpitview/replay_source.py` — přehrání `.cvlog` (`--replay`), logový čas pro kalibrátory
 - `cockpitview/flight_profile.py` — skriptovaný letový profil (přímý let, zatáčky, loop)
 - `cockpitview/quaternion.py` — kvaternionové výpočty orientace pro emulátor
 - `cockpitview/hud.py` — F-16 HUD renderer
