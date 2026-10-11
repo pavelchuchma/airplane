@@ -38,6 +38,11 @@ decisions. Keep it updated when the design evolves.
   probed via ROM bootloader — see `esp32/tools/board_id.py`). Boards may be
   plugged into any USB port; `custom_usb_location` is only a probe-order hint.
   Note: the probe resets the board it touches.
+- `tools/select_port.py` **aborts the upload** when no connected board has
+  the env's MAC or its port is busy (PlatformIO would otherwise auto-detect
+  the port and flash whatever single board is plugged in). After an upload
+  check the `select_port:` line, not just the `SUCCESS` tail, and stop
+  cocpitView before flashing — it holds the ground port.
 - Ground app: `cocpitView/run.sh`
 - Ground app tests: `cd cocpitView && .venv/bin/python -m unittest discover tests`
 - Flight log inspection: `cd cocpitView && .venv/bin/python -m cockpitview.flightlog info|csv|events|yawcal logs/<file>.cvlog`

@@ -6,6 +6,9 @@
 # and the hint usually keeps the other board untouched. See tools/board_id.py.
 #
 # Only runs for upload/monitor targets; a plain build never touches the boards.
+#
+# A failed lookup aborts the build: PlatformIO would otherwise fall back to
+# its own port auto-detection and flash whatever single board is plugged in.
 
 import os
 import sys
@@ -16,10 +19,15 @@ sys.path.insert(0, os.path.join(env["PROJECT_DIR"], "tools"))
 import board_id
 
 
+def fail(msg):
+    sys.stderr.write("select_port: ERROR: %s - upload aborted\n" % msg)
+    Exit(1)
+
+
 def resolve_port():
     mac = env.GetProjectOption("custom_board_mac", "").strip()
     if not mac:
-        return
+        fail("custom_board_mac not set for this environment")
     hint = env.GetProjectOption("custom_usb_location", "").strip() or None
     esptool_cmd = [
         env.subst("$PYTHONEXE"),
@@ -28,8 +36,7 @@ def resolve_port():
     try:
         port = board_id.find_board(mac, hint, esptool_cmd)
     except (LookupError, RuntimeError) as err:
-        print("select_port: WARNING: %s" % err)
-        return
+        fail(str(err))
     env.Replace(UPLOAD_PORT=port, MONITOR_PORT=port)
     print("select_port: board %s -> %s" % (mac, port))
 
