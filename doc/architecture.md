@@ -69,6 +69,20 @@ the aircraft booted on, and it drifts from there. It is calibrated in flight
 against the GPS (`cockpitview/yawcal.py`, see below), which avoids compass
 calibration and the airframe's magnetic interference entirely.
 
+The MPU-6500 is configured at boot, not left at its power-on defaults: gyro
+DLPF 20 Hz and accel DLPF 10 Hz act as the anti-aliasing filters for the
+50 Hz polling (the chip otherwise samples at 1–8 kHz with 250/460 Hz
+bandwidth, and motor vibration folds into the band as fake rotation), the
+accel range is ±16 g so vibration peaks do not clip the ADC (a clipped mean
+biases the accel-derived angle and the complementary filter converges to
+it), and the gyro range is ±500 °/s. The complementary filter takes the
+accelerometer only when |a| is within 0.3 g of 1 g; otherwise the sample is
+gyro-only. The config is read back once a second and rewritten if the chip
+has lost it — a sensor reset would otherwise silently restore the ±2 g,
+unfiltered defaults with an 8× wrong scale. Motivated by the 2026-10-11
+ground motor run, where roll and pitch wandered by 10–30° and shook by
+12–24° per second while the airframe was held still.
+
 The IMU's body frame is X-forward, **Y-left**, Z-up (FLU) — forced by the
 mounting (board upside down) and the requirement that the sensor→body
 transform stay a proper rotation. Roll and pitch carry the usual aerospace

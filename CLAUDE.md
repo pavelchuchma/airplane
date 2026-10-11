@@ -87,6 +87,22 @@ decisions. Keep it updated when the design evolves.
   `kRollTrimRad`/`kPitchTrimRad` (`src/air/main.cpp`), subtracted from the
   accel-derived angles; a re-measurement is *added* to the constant, and
   the pitch zero is taken in level flight, not on the bench.
+  **IMU registers are configured at boot** (`kMpuConfig`): gyro DLPF
+  20 Hz + accel DLPF 10 Hz (anti-aliasing for the 50 Hz polling), ±16 g
+  accel (no ADC clipping under motor vibration), ±500 °/s gyro, PLL clock;
+  `kAccelScale`/`kGyroScale` follow the ranges. The complementary filter
+  skips the accel correction when |a| is outside 1 g ± 0.3 g. The config
+  is read back every second and rewritten on mismatch (`# IMU config
+  lost`). Before this (power-on defaults, 2026-10-11 ground motor run) the
+  attitude wandered 10–30° and shook 12–24°/s with the airframe held
+  still: aliased vibration plus a clipped accel mean, not gyro clipping
+  (rates peaked at 75 °/s). Verified the same day
+  (`2026-10-11_180819.cvlog`, motor run hand-held level and nose-up):
+  gyro-rate rms 0.03–0.06 rad/s, attitude swing 0.4–2° per second,
+  no wander. That log also has the baro dead for the whole session
+  (`baro_ok` 0 from boot, cause unknown — no USB, so no `#` lines) and
+  five ~0.85 s sensor-task stalls at the end while the airframe sat
+  upside down; neither is explained yet.
   The BMP280 barometer is read
   (`src/air/bmp280.cpp`): altitude relative to boot location +
   low-pass-filtered vario. I2C robustness: **all I2C access lives in a

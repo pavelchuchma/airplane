@@ -71,14 +71,45 @@
 namespace {
 
 constexpr uint8_t kMpuAddress = 0x68;
-constexpr uint8_t kRegPowerManagement1 = 0x6B;
+constexpr uint8_t kRegConfig = 0x1A;
+constexpr uint8_t kRegGyroConfig = 0x1B;
+constexpr uint8_t kRegAccelConfig = 0x1C;
+constexpr uint8_t kRegAccelConfig2 = 0x1D;
 constexpr uint8_t kRegAccelStart = 0x3B;
+constexpr uint8_t kRegPowerManagement1 = 0x6B;
 constexpr int kPinSda = 21;
 constexpr int kPinScl = 22;
 
-constexpr float kAccelScale = 1.0f / 16384.0f;        // LSB -> g, +-2g range
-constexpr float kGyroScale = (PI / 180.0f) / 131.0f;  // LSB -> rad/s, +-250 deg/s range
+// MPU-6500 register configuration. The on-chip DLPFs are the anti-aliasing
+// filters for our 50 Hz polling (Nyquist 25 Hz): without them the chip
+// samples at 1-8 kHz with 250/460 Hz bandwidth and motor vibration folds
+// down into the band as fake rotation (17-45 deg/s rms on a hand-held
+// airframe, 2026-10-11 ground run). The +-16 g accel range keeps vibration
+// peaks out of ADC clipping - a clipped mean biases the accel-derived angle,
+// and the complementary filter then converges to it within seconds; no
+// filter can undo that after the ADC. Verified back once a second because
+// a chip reset would silently restore the +-2 g / no-DLPF defaults.
+struct MpuRegister {
+  uint8_t reg;
+  uint8_t value;
+  uint8_t mask;  // bits compared on read-back (reserved bits float on clones)
+};
+constexpr MpuRegister kMpuConfig[] = {
+    {kRegPowerManagement1, 0x01, 0x7F},  // awake, auto clock (gyro PLL)
+    {kRegConfig, 0x04, 0x7F},            // gyro DLPF 20 Hz (9.9 ms), Fs 1 kHz
+    {kRegGyroConfig, 0x08, 0xFB},        // +-500 deg/s, DLPF enabled (FCHOICE_B = 0)
+    {kRegAccelConfig, 0x18, 0xF8},       // +-16 g
+    {kRegAccelConfig2, 0x05, 0x0F},      // accel DLPF 10 Hz (35 ms)
+};
+constexpr uint32_t kMpuConfigCheckMs = 1000;
+
+constexpr float kAccelScale = 1.0f / 2048.0f;          // LSB -> g, +-16 g range
+constexpr float kGyroScale = (PI / 180.0f) / 65.5f;    // LSB -> rad/s, +-500 deg/s range
 constexpr float kComplementaryAlpha = 0.98f;          // gyro vs. accelerometer weight
+// The accelerometer only gives attitude when it measures gravity alone;
+// outside this band around 1 g (vibration, turn load, g-stall) the sample
+// is gyro-only.
+constexpr float kAccelTrustBandG = 0.3f;
 
 // Mounted orientation. The GY-91 sits in the airframe rotated 180 deg about
 // the body X axis (upside down, sensor X still forward), so Y and Z readings
@@ -384,6 +415,42 @@ bool mpuWriteRegister(uint8_t reg, uint8_t value) {
   return Wire.endTransmission() == 0;
 }
 
+bool mpuReadRegister(uint8_t reg, uint8_t &value) {
+  Wire.beginTransmission(kMpuAddress);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
+  if (Wire.requestFrom(kMpuAddress, (uint8_t)1, (uint8_t) true) != 1) {
+    return false;
+  }
+  value = Wire.read();
+  return true;
+}
+
+bool mpuWriteConfig() {
+  for (const MpuRegister &r : kMpuConfig) {
+    if (!mpuWriteRegister(r.reg, r.value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Reads the config back; rewrites it (and says so) when the chip has lost
+// it. A failed read is not a mismatch - that is the bus, and the data reads
+// handle the bus.
+void mpuCheckConfig() {
+  for (const MpuRegister &r : kMpuConfig) {
+    uint8_t value;
+    if (mpuReadRegister(r.reg, value) && (value & r.mask) != r.value) {
+      Serial.printf("# IMU config lost (reg 0x%02X reads 0x%02X) - rewriting\n", r.reg, value);
+      mpuWriteConfig();
+      return;
+    }
+  }
+}
+
 // Sensor -> body frame per kAxisSign. Negation is safe for every count the
 // MPU produces except INT16_MIN, whose negative does not fit in an int16_t;
 // that one is clamped (it is the saturated end of the range anyway).
@@ -609,13 +676,14 @@ void updateBattery(uint32_t nowUs, uint32_t nowMs) {
 // guaranteed to support (the MS4525DO has no registers at all; the old
 // write-mode probe rejected clones that NACK address+W).
 bool probeImu() {
-  mpuWriteRegister(kRegPowerManagement1, 0x00);  // wake up from sleep mode
-  delay(50);
   int16_t accel[3];
   int16_t gyro[3];
   for (int i = 0; i < 3; i++) {
-    if (mpuReadRaw(accel, gyro)) {
-      return true;
+    if (mpuWriteConfig()) {
+      delay(50);  // wake-up + DLPF settling before the first data read
+      if (mpuReadRaw(accel, gyro)) {
+        return true;
+      }
     }
     delay(10);
   }
@@ -741,6 +809,7 @@ void sensorTask(void *) {
   }
 
   TickType_t lastWake = xTaskGetTickCount();
+  uint32_t nextConfigCheckMs = millis() + kMpuConfigCheckMs;
 
   for (;;) {
     vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(20));  // 50 Hz
@@ -755,7 +824,7 @@ void sensorTask(void *) {
     if (imuLc.shouldAttempt(nowMs)) {
       int16_t accelRaw[3];
       int16_t gyroRaw[3];
-      float ax = 0.0f, ay = 0.0f, az = 0.0f;
+      float ax = 0.0f, ay = 0.0f, az = 0.0f, aMag = 0.0f;
       bool good = mpuReadRaw(accelRaw, gyroRaw);
       if (good) {
         ax = accelRaw[0] * kAccelScale;
@@ -764,16 +833,14 @@ void sensorTask(void *) {
         // |a| this low is aerodynamically impossible - a disturbed bus can
         // ACK corrupted (e.g. all-zero) data, and the accel magnitude is
         // the cheapest plausibility check the sample offers.
-        good = sqrtf(ax * ax + ay * ay + az * az) >= 0.05f;
+        aMag = sqrtf(ax * ax + ay * ay + az * az);
+        good = aMag >= 0.05f;
       }
       uint32_t prevGoodUs = imuLc.lastGoodUs;
       if (imuLc.onResult(good, now, nowMs)) {
         gx = gyroRaw[0] * kGyroScale - gyroBiasX;
         gy = gyroRaw[1] * kGyroScale - gyroBiasY;
         gz = gyroRaw[2] * kGyroScale - gyroBiasZ;
-
-        float rollAccel = atan2f(ay, az) - kRollTrimRad;
-        float pitchAccel = atan2f(-ax, sqrtf(ay * ay + az * az)) - kPitchTrimRad;
 
         // dt spans back to the last good sample (capped), so the rotation
         // during a sub-threshold dropout is approximated by this sample's
@@ -783,9 +850,21 @@ void sensorTask(void *) {
         // filter would converge to on garbage) and revival resumes with
         // dt = one tick: the discarded streak reads refreshed lastGoodUs.
         float dt = min(now - prevGoodUs, kImuDeadAfterUs) / 1000000.0f;
-        roll = kComplementaryAlpha * (roll + gx * dt) + (1.0f - kComplementaryAlpha) * rollAccel;
-        pitch = kComplementaryAlpha * (pitch + gy * dt) + (1.0f - kComplementaryAlpha) * pitchAccel;
+        roll += gx * dt;
+        pitch += gy * dt;
         yaw += gz * dt;  // no magnetometer - gyro integration only, drifts over time
+
+        if (fabsf(aMag - 1.0f) <= kAccelTrustBandG) {
+          float rollAccel = atan2f(ay, az) - kRollTrimRad;
+          float pitchAccel = atan2f(-ax, sqrtf(ay * ay + az * az)) - kPitchTrimRad;
+          roll += (1.0f - kComplementaryAlpha) * (rollAccel - roll);
+          pitch += (1.0f - kComplementaryAlpha) * (pitchAccel - pitch);
+        }
+
+        if ((int32_t)(nowMs - nextConfigCheckMs) >= 0) {
+          nextConfigCheckMs = nowMs + kMpuConfigCheckMs;
+          mpuCheckConfig();
+        }
       }
     }
 
