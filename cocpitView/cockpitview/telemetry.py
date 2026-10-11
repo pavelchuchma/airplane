@@ -112,12 +112,12 @@ class TelemetrySnapshot:
         return self._fresh(self.heartbeat_ts) or self.has_attitude
 
     @property
-    def airspeed_kmh(self):
-        """Airspeed in km/h, or None when unknown (stale, or the air side
-        reports no/dead pitot as NaN)."""
+    def ias_mps(self):
+        """Indicated airspeed in m/s, or None when unknown (stale, or the air
+        side reports no/dead pitot as NaN)."""
         if not self._fresh(self.vfr_ts) or math.isnan(self.airspeed_mps):
             return None
-        return self.airspeed_mps * 3.6
+        return self.airspeed_mps
 
     @property
     def vario_mps(self):
@@ -203,11 +203,11 @@ class TelemetrySnapshot:
         return (self.vn, self.ve, self.vd)
 
     @property
-    def groundspeed_kmh(self):
-        """GPS ground speed in km/h, or None without a (fresh) fix."""
+    def gs_mps(self):
+        """GPS ground speed in m/s, or None without a (fresh) fix."""
         if not self._fresh(self.gpi_ts):
             return None
-        return math.hypot(self.vn, self.ve) * 3.6
+        return math.hypot(self.vn, self.ve)
 
     @property
     def link_status(self):

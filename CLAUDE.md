@@ -166,7 +166,7 @@ decisions. Keep it updated when the design evolves.
   GLOBAL_POSITION_INT (only with a fix) + RADIO_STATUS + STATUSTEXT on
   failsafe transitions. A built-in emulator remains via `--emulator`. The
   HUD shows `GPS 3D 12` and `LNK -72 U2% D0%` status lines (air-side RSSI,
-  uplink/downlink loss), a `G 42` GPS ground-speed line under the airspeed
+  uplink/downlink loss), a `G 12` GPS ground-speed line under the airspeed
   box (from GLOBAL_POSITION_INT velocities, so it disappears without a fix)
   and blinks `FAILSAFE` while the air side reports it. `TelemetryHub` runs a
   chain of message processors (`HomePoint`, then `BaroCalibrator`) on every
