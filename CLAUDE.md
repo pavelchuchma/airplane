@@ -78,10 +78,10 @@ decisions. Keep it updated when the design evolves.
   in opposite frames on one axis and the complementary filter degrades to
   its slow accel path — seconds of rubbery HUD lag, seen on the airframe
   2026-08-25 (pitch jerked the wrong way first, then crawled to the right
-  value — the inverted-gyro-Y signature). Level trim measured on the
-  airframe 2026-08-25 (`kRollTrimRad`/`kPitchTrimRad`, roll −0.52°, pitch
-  +0.09°, subtracted from the accel-derived angles): airplane held in ideal
-  level attitude reads roll/pitch 0.0.
+  value — the inverted-gyro-Y signature). Level trim lives in
+  `kRollTrimRad`/`kPitchTrimRad` (`src/air/main.cpp`), subtracted from the
+  accel-derived angles; a re-measurement is *added* to the constant, and
+  the pitch zero is taken in level flight, not on the bench.
   The BMP280 barometer is read
   (`src/air/bmp280.cpp`): altitude relative to boot location +
   low-pass-filtered vario. I2C robustness: **all I2C access lives in a
