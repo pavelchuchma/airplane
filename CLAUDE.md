@@ -113,10 +113,32 @@ decisions. Keep it updated when the design evolves.
   (`doc/todo/001-gy91-csb-ncs-tie-high.md`). Diagnostics added for the
   next occurrence (USB `#` lines only): a chip-id probe at baro death
   (`no ACK` vs `still answers`) and `# slow I2C: <sensor> took N ms` for
-  any transaction ≥ 500 ms. The
-  ~1 s sensor-task stalls (55 in that boot, none in any other boot that
-  day) appeared only after the death and are not just the 2 s baro
-  probes; which transaction stalls is still unknown.
+  any transaction ≥ 500 ms.
+  The ~1 s sensor-task stalls are a separate, open problem: across all
+  logs they appear only in boots with the balance lead connected and only
+  since 2026-10-11 (107 in `164858`, a stationary bench session on the
+  firmware *before* the IMU config check; 21–50 in later battery boots;
+  0–1 in every USB boot and in every battery boot of Aug–Sep). Not the
+  motor (cells steady), not orientation, not the per-second config check.
+  Each stall freezes the snapshot for exactly ~1.0 s, so `loop()` drops
+  all OK flags for ~0.8 s (the HUD "stutter"). Which transaction stalls is
+  unknown; the `# slow I2C` diagnostic needs USB, so the discriminating
+  experiment is USB + balance lead only (no main lead): stalls → the
+  ADC/battery read path, none → BEC/wiring (floating CSB/NCS,
+  `doc/todo/001`).
+  **Gyro bias calibration waits for stillness** (protocol v6,
+  `calibrateGyroWhenStill()`): a 1 s window with every axis within 3 °/s,
+  |a| within 1 g ± 0.1 g, no read gap > 100 ms, |bias| ≤ 10 °/s; rejected
+  windows restart, no time limit (5 s without any read → IMU absent).
+  Meanwhile `TELEM_FLAG_IMU_CALIBRATING` is set, the rate fields are raw
+  and the HUD shows `GYRO CAL - hold still (7°/s)` where the horizon will
+  be. Reason: the 2026-10-12 logs had biases off by 10 and 30–37 °/s from
+  turning the plane over during the old fixed 0.8 s window, which the
+  complementary filter turns into a permanent 10–40° attitude offset plus
+  yaw drift at the bias rate. Measured on five 5–14 min stationary boots:
+  the residual bias moves < 0.05 °/s, so no in-flight recalibration is
+  needed (straight flight is indistinguishable from stillness to a
+  gyro+accel, so it would be unsafe without a GPS-speed gate anyway).
   The BMP280 barometer is read
   (`src/air/bmp280.cpp`): altitude relative to boot location +
   low-pass-filtered vario. I2C robustness: **all I2C access lives in a

@@ -28,7 +28,7 @@ Two invariants the flight log (flightlog.py) relies on:
 import collections
 import struct
 
-PROTOCOL_VERSION = 5
+PROTOCOL_VERSION = 6
 
 MSG_TELEMETRY = 0x01
 MSG_COMMAND = 0x02
@@ -41,6 +41,8 @@ TELEM_FLAG_BARO_OK = 1 << 3
 TELEM_FLAG_PITOT_OK = 1 << 4
 TELEM_FLAG_IMU_OK = 1 << 5  # clear = attitude fields are frozen/stale
 TELEM_FLAG_BATT_OK = 1 << 6  # cell*_mv valid (balance lead present + plausible)
+# boot gyro calibration waiting for stillness: attitude 0, rates raw (uncompensated)
+TELEM_FLAG_IMU_CALIBRATING = 1 << 7
 
 COMMAND_CHANNELS = 8
 NEUTRAL_CHANNELS = (0,) * COMMAND_CHANNELS  # surfaces neutral, throttle idle

@@ -467,6 +467,16 @@ class Hud:
                     (self.cx, self.cy + self.h * 0.10),
                     font=self.font_big,
                 )
+        if snap.connected and snap.imu_calibrating_dps is not None:
+            # the air side waits for the airframe to be still before taking
+            # the gyro bias; steady text (information, not an alarm) where
+            # the horizon will appear, with the motion it still sees
+            self._text(
+                surface,
+                f"GYRO CAL - hold still ({snap.imu_calibrating_dps:.0f}\u00b0/s)",
+                (self.cx, self.cy - self.h * 0.10),
+                font=self.font_big,
+            )
 
         if snap.has_attitude:
             self.draw_pitch_ladder(surface, snap.roll, snap.pitch)

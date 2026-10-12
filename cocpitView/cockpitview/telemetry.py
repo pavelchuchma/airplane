@@ -96,6 +96,8 @@ class TelemetrySnapshot:
     link_cmd_loss_pct: int = 0  # uplink loss measured at the air side
     link_telem_loss_pct: int = 0  # downlink loss measured PC-side
     failsafe_active: bool = False  # air-side failsafe flag
+    # boot gyro calibration waiting for stillness: |raw rates| in deg/s, None otherwise
+    imu_cal_motion_dps: float | None = None
     link_ts: float = field(default=-math.inf)
 
     now: float = 0.0
@@ -232,6 +234,14 @@ class TelemetrySnapshot:
         """True while the air side reports its command-loss failsafe."""
         return self._fresh(self.link_ts) and self.failsafe_active
 
+    @property
+    def imu_calibrating_dps(self):
+        """How much the airframe moves [deg/s] while the air side waits for
+        stillness to calibrate the gyro, or None when it is not waiting."""
+        if not self._fresh(self.link_ts):
+            return None
+        return self.imu_cal_motion_dps
+
 
 def apply_message(s, msg, now):
     """Applies a MAVLink message to a TelemetrySnapshot (not thread-safe)."""
@@ -325,9 +335,10 @@ class TelemetryHub:
         if forward:
             self._conn.mav.send(msg)
 
-    def update_link(self, rssi_dbm, cmd_loss_pct, telem_loss_pct, failsafe):
-        """ESP-NOW link stats for the HUD (no MAVLink counterpart - QGC gets
-        RADIO_STATUS/STATUSTEXT separately from the source)."""
+    def update_link(self, rssi_dbm, cmd_loss_pct, telem_loss_pct, failsafe, imu_cal_motion_dps=None):
+        """ESP-NOW link stats and air-side status flags for the HUD (no
+        MAVLink counterpart - QGC gets RADIO_STATUS/STATUSTEXT separately
+        from the source)."""
         now = time.monotonic()
         with self._lock:
             s = self._state
@@ -335,6 +346,7 @@ class TelemetryHub:
             s.link_cmd_loss_pct = cmd_loss_pct
             s.link_telem_loss_pct = telem_loss_pct
             s.failsafe_active = failsafe
+            s.imu_cal_motion_dps = imu_cal_motion_dps
             s.link_ts = now
 
     def snapshot(self):

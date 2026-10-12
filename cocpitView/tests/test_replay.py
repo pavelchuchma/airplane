@@ -188,3 +188,19 @@ class ParseTime(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GyroCalibrationFlag(ReplayTestCase):
+    """TELEM_FLAG_IMU_CALIBRATING: no ATTITUDE (the fields are zero), and the
+    hub gets the raw-rate magnitude to show next to "hold still"."""
+
+    def test_calibrating_frames_publish_motion_instead_of_attitude(self):
+        frames = [
+            (0.0, telemetry_payload(time_boot_ms=1000, flags=protocol.TELEM_FLAG_IMU_CALIBRATING)),
+            (0.02, telemetry_payload(time_boot_ms=1020, flags=IMU_OK)),
+        ]
+        write_log(self.path, frames)
+        self.run_replay()
+        self.assertEqual(len(self.hub.attitudes()), 1)
+        self.assertEqual(self.hub.link_updates[0]["imu_cal_motion_dps"], 0.0)
+        self.assertIsNone(self.hub.link_updates[1]["imu_cal_motion_dps"])

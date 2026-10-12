@@ -6,7 +6,7 @@
 
 #include <stdint.h>
 
-constexpr uint8_t PROTOCOL_VERSION = 5;
+constexpr uint8_t PROTOCOL_VERSION = 6;
 
 // Both radios must sit on the same channel; set explicitly at bring-up.
 constexpr uint8_t WIFI_CHANNEL = 1;
@@ -22,6 +22,10 @@ constexpr uint8_t TELEM_FLAG_BARO_OK = 1 << 3;
 constexpr uint8_t TELEM_FLAG_PITOT_OK = 1 << 4;
 constexpr uint8_t TELEM_FLAG_IMU_OK = 1 << 5;  // clear = attitude fields are frozen/stale
 constexpr uint8_t TELEM_FLAG_BATT_OK = 1 << 6;  // cellMv valid (balance lead present + plausible)
+// Boot gyro calibration waiting for the airframe to be still: attitude is
+// 0, the rate fields carry raw (bias-uncompensated) rates. Never set
+// together with IMU_OK.
+constexpr uint8_t TELEM_FLAG_IMU_CALIBRATING = 1 << 7;
 
 // Air -> PC, 50 Hz. GPS fields repeat between the 5 Hz GPS updates; floats
 // keep the NAN-as-invalid convention of gps::Fix (survives struct.unpack).

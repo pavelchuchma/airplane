@@ -145,8 +145,21 @@ constexpr int8_t kAxisSign[3] = {1, -1, -1};  // X, Y, Z: sensor -> body frame (
 constexpr float kRollTrimRad = -0.522f * PI / 180.0f;
 constexpr float kPitchTrimRad = 7.562f * PI / 180.0f;
 constexpr uint32_t kSampleIntervalUs = 20000;         // 50 Hz
-constexpr int kGyroCalibrationSamples = 200;
 constexpr uint32_t kImuDeadAfterUs = 500000;  // 0.5 s without a good read = IMU out
+// Gyro bias calibration waits for the airframe to be still instead of
+// assuming it is: plugging the battery always means handling the plane,
+// and a bias averaged over any rotation is wrong for the whole session
+// (an unnoticed 10 deg/s on one axis = that much yaw drift and a 10 deg
+// attitude offset). A window is accepted when every axis stays within
+// kGyroStillRangeRad and |a| within the band, i.e. nobody is turning or
+// carrying it; precision comes from the mean, the gates only detect motion.
+constexpr uint32_t kGyroStillWindowUs = 1000000;
+constexpr uint32_t kGyroStillMaxGapUs = 100000;  // a longer read gap could hide rotation
+constexpr int kGyroStillMinSamples = 25;         // half the window at 50 Hz
+constexpr float kGyroStillRangeRad = 3.0f * PI / 180.0f;
+constexpr float kGyroStillAccelBandG = 0.1f;
+constexpr float kGyroBiasMaxRad = 10.0f * PI / 180.0f;  // MPU-6500 ZRO tolerance is +-5 deg/s
+constexpr uint32_t kGyroCalGiveUpUs = 5000000;         // no read at all this long = IMU absent
 
 constexpr uint32_t kBaroIntervalUs = 40000;   // 25 Hz, just under the BMP280's ~26 Hz output
 constexpr int kBaroReferenceSamples = 25;     // 1 s average defining altitude zero
@@ -276,6 +289,10 @@ struct SensorSnapshot {
   bool baroOk = false;
   bool pitotOk = false;
   bool imuOk = false;  // clear = roll/pitch/yaw frozen at the last good sample
+  // Boot gyro calibration still waiting for stillness: attitude is 0 and
+  // the rates carry raw, bias-uncompensated values (the HUD shows how much
+  // the airframe moves).
+  bool imuCalibrating = false;
   bool battOk = false;
   uint32_t snapshotUs = 0;  // micros() at publish time
 };
@@ -492,31 +509,91 @@ bool mpuReadRaw(int16_t *accel, int16_t *gyro) {
   return true;
 }
 
-// The ESP32 must be held still during this, otherwise the gyro bias will be
-// wrong. Requires at least half the window: a bias averaged from a handful
-// of noisy reads (or silently left at 0.0, as the old code did on a fully
-// failed window) would drift the yaw all flight while looking calibrated.
-bool calibrateGyro() {
-  int16_t accel[3];
-  int16_t gyro[3];
-  long sumX = 0, sumY = 0, sumZ = 0;
+// Snapshot published while the gyro calibration waits: rates are raw so
+// the HUD can tell "hold still (7 deg/s)" from a dead IMU.
+void publishCalibrating(const int16_t gyro[3], uint32_t nowUs) {
+  portENTER_CRITICAL(&sensorMux);
+  sensorShared.rollRate = gyro[0] * kGyroScale;
+  sensorShared.pitchRate = gyro[1] * kGyroScale;
+  sensorShared.yawRate = gyro[2] * kGyroScale;
+  sensorShared.imuOk = false;
+  sensorShared.imuCalibrating = true;
+  sensorShared.snapshotUs = nowUs;
+  portEXIT_CRITICAL(&sensorMux);
+}
+
+// Samples at 50 Hz until one kGyroStillWindowUs window passes the stillness
+// gates (see the constants), then takes its mean as the bias. No time limit
+// - the HUD tells the pilot to hold still - except that an IMU which stops
+// answering altogether is reported absent, so a dead sensor never shows as
+// "calibrating". Windows are time-based; a gap between reads longer than
+// kGyroStillMaxGapUs restarts the window, since the rotation inside the
+// gap is invisible to the range gate.
+bool calibrateGyroWhenStill() {
+  Serial.println("# gyro calibration: waiting for the airframe to be still");
+  TickType_t lastWake = xTaskGetTickCount();
+  uint32_t startUs = micros();
+  uint32_t lastReadUs = startUs;
+  uint32_t windowStartUs = startUs;
+  long sum[3] = {0, 0, 0};
+  int16_t lo[3], hi[3];
+  float aLo = 0.0f, aHi = 0.0f;
   int count = 0;
-  for (int i = 0; i < kGyroCalibrationSamples; i++) {
-    if (mpuReadRaw(accel, gyro)) {
-      sumX += gyro[0];
-      sumY += gyro[1];
-      sumZ += gyro[2];
-      count++;
+  for (;;) {
+    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(20));
+    uint32_t now = micros();
+    int16_t accel[3], gyro[3];
+    if (!mpuReadRaw(accel, gyro)) {
+      if (now - lastReadUs > kGyroCalGiveUpUs) {
+        return false;
+      }
+      continue;
     }
-    delay(3);
+    publishCalibrating(gyro, now);
+    float aMag = sqrtf((float)accel[0] * accel[0] + (float)accel[1] * accel[1] +
+                       (float)accel[2] * accel[2]) * kAccelScale;
+    if (now - lastReadUs > kGyroStillMaxGapUs) {
+      count = 0;
+    }
+    lastReadUs = now;
+    if (count == 0) {
+      windowStartUs = now;
+      aLo = aHi = aMag;
+      for (int i = 0; i < 3; i++) {
+        sum[i] = 0;
+        lo[i] = hi[i] = gyro[i];
+      }
+    }
+    count++;
+    aLo = min(aLo, aMag);
+    aHi = max(aHi, aMag);
+    for (int i = 0; i < 3; i++) {
+      sum[i] += gyro[i];
+      lo[i] = min(lo[i], gyro[i]);
+      hi[i] = max(hi[i], gyro[i]);
+    }
+    if (now - windowStartUs < kGyroStillWindowUs) {
+      continue;
+    }
+
+    bool still = count >= kGyroStillMinSamples && aLo >= 1.0f - kGyroStillAccelBandG &&
+                 aHi <= 1.0f + kGyroStillAccelBandG;
+    float bias[3];
+    for (int i = 0; i < 3; i++) {
+      bias[i] = (sum[i] / (float)count) * kGyroScale;
+      still = still && (hi[i] - lo[i]) * kGyroScale <= kGyroStillRangeRad &&
+              fabsf(bias[i]) <= kGyroBiasMaxRad;
+    }
+    if (still) {
+      gyroBiasX = bias[0];
+      gyroBiasY = bias[1];
+      gyroBiasZ = bias[2];
+      Serial.printf("# gyro bias %.2f %.2f %.2f deg/s after %.1f s\n", bias[0] * 180.0f / PI,
+                    bias[1] * 180.0f / PI, bias[2] * 180.0f / PI, (now - startUs) / 1e6f);
+      return true;
+    }
+    count = 0;  // window rejected - start a fresh one
   }
-  if (count < kGyroCalibrationSamples / 2) {
-    return false;
-  }
-  gyroBiasX = (sumX / (float)count) * kGyroScale;
-  gyroBiasY = (sumY / (float)count) * kGyroScale;
-  gyroBiasZ = (sumZ / (float)count) * kGyroScale;
-  return true;
 }
 
 // Names the sensor whose transaction hit the driver's ~1 s stall.
@@ -545,7 +622,7 @@ void diagnoseBaroDeath() {
 
 // Averages 1 s of pressure to define altitude zero at the boot location.
 // The first few samples are discarded while the IIR filter settles.
-// Requires at least half the window, like calibrateGyro().
+// Requires at least half the window.
 bool calibrateBaroReference() {
   constexpr int kDiscard = 5;
   float sum = 0.0f;
@@ -817,15 +894,17 @@ void sensorTask(void *) {
   // Boot calibrations, one retry each: a transient bus glitch during the
   // window must not cost the whole flight's data. A sensor whose
   // calibration fails twice is treated as absent - resuming later with a
-  // half-made zero/bias/reference would look healthy and lie.
-  if (imuLc.present && !(calibrateGyro() || calibrateGyro())) {
-    imuLc.present = false;
-  }
+  // half-made zero/bias/reference would look healthy and lie. Baro and
+  // pitot don't mind the plane being handled (sub-pascal, sub-meter), so
+  // they go first; the gyro then waits for stillness as long as it takes.
   if (baroLc.present && !(calibrateBaroReference() || calibrateBaroReference())) {
     baroLc.present = false;
   }
   if (pitotLc.present && !(calibratePitotZero() || calibratePitotZero())) {
     pitotLc.present = false;
+  }
+  if (imuLc.present && !calibrateGyroWhenStill()) {
+    imuLc.present = false;
   }
 
   uint32_t bootUs = micros();
@@ -919,6 +998,7 @@ void sensorTask(void *) {
     sensorShared.baroOk = baroLc.ok;
     sensorShared.pitotOk = pitotLc.ok;
     sensorShared.imuOk = imuLc.ok;
+    sensorShared.imuCalibrating = false;
     sensorShared.battOk = battLc.ok;
     sensorShared.snapshotUs = now;
     portEXIT_CRITICAL(&sensorMux);
@@ -1015,7 +1095,7 @@ void loop() {
   // flags. A single ~1 s stalled transaction blanks all three for its
   // duration - honest, the data in the snapshot really is that old.
   if (now - s.snapshotUs > kSnapshotStaleUs) {
-    s.baroOk = s.pitotOk = s.imuOk = s.battOk = false;
+    s.baroOk = s.pitotOk = s.imuOk = s.battOk = s.imuCalibrating = false;
   }
 
   gps::Fix f = gps::fix();
@@ -1026,7 +1106,7 @@ void loop() {
   t.flags = (f.valid ? TELEM_FLAG_GPS_FIX : 0) | (failsafe ? TELEM_FLAG_FAILSAFE : 0) |
             (mismatch ? TELEM_FLAG_VERSION_MISMATCH : 0) | (s.baroOk ? TELEM_FLAG_BARO_OK : 0) |
             (s.pitotOk ? TELEM_FLAG_PITOT_OK : 0) | (s.imuOk ? TELEM_FLAG_IMU_OK : 0) |
-            (s.battOk ? TELEM_FLAG_BATT_OK : 0);
+            (s.battOk ? TELEM_FLAG_BATT_OK : 0) | (s.imuCalibrating ? TELEM_FLAG_IMU_CALIBRATING : 0);
   t.sats = f.sats;
   t.timeBootMs = nowMs;
   t.rollRad = s.roll;

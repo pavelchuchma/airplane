@@ -147,7 +147,18 @@ A dead sensor is probed at most every 2 s (its failed transactions are
 slow), the pitot resumes with the boot zero offset (in-flight re-zeroing is
 impossible, it needs still air). A sensor absent at boot — probe or
 calibration failed twice — stays absent for the session: with no power
-loss in flight there is nothing that could make it appear later.
+loss in flight there is nothing that could make it appear later. The gyro
+bias calibration is the exception to "boot calibrations take ~2 s": it
+waits, without a time limit, for a 1 s window in which every axis stays
+within 3 °/s and |a| within 1 g ± 0.1 g, because plugging the battery
+always means handling the plane and a bias averaged over any rotation is
+wrong for the whole session (seen as a 10–37 °/s offset on 2026-10-12).
+While it waits, telemetry sets `TELEM_FLAG_IMU_CALIBRATING` and carries
+the raw rates, so the HUD can say `GYRO CAL - hold still (7°/s)` instead
+of an empty horizon; an IMU that stops answering for 5 s during the wait
+is reported absent, so a dead sensor never looks like a pending
+calibration. Baro and pitot calibrate first — handling the plane costs
+them sub-pascal / sub-metre errors.
 Bus-level faults are handled separately: boot clocks a stuck slave free
 before `Wire.begin()` (an MCU reset mid-transaction otherwise leaves SDA
 held low across reboots, taking down every device on the bus), and when

@@ -86,11 +86,18 @@ class TelemetryPublisher:
                 " - reflash / git pull"
             )
 
+        # While the boot gyro calibration waits for stillness the rate fields
+        # are raw, so their magnitude is how much the airframe moves - the
+        # HUD shows it next to the "hold still" message.
+        calibrating = bool(t.flags & protocol.TELEM_FLAG_IMU_CALIBRATING)
         self._hub.update_link(
             rssi_dbm=t.rssi_dbm if t.rssi_dbm != 0 else None,
             cmd_loss_pct=t.cmd_loss_pct,
             telem_loss_pct=telem_loss_pct,
             failsafe=failsafe,
+            imu_cal_motion_dps=(
+                math.degrees(math.sqrt(t.rollspeed**2 + t.pitchspeed**2 + t.yawspeed**2)) if calibrating else None
+            ),
         )
         if failsafe != self._failsafe:
             self._failsafe = failsafe
