@@ -2,7 +2,7 @@
 
 ![MS4525DO airspeed sensor kit](img/pitot-ms4525do.jpg)
 
-- **Ordered:** 1× variant "For Pixhawk 6C", AliExpress (Jul 19, 2026)
+- **Ordered:** 1× variant "For Pixhawk 6C" (AliExpress, Jul 19, 2026)
 - **Product:** [Differential Airspeed Pitot Tube MS4525DO + Airspeed Sensor](https://www.aliexpress.com/item/1005009558214567.html) — HotRC Toy UAV Store
 - **Kit contents:** sensor breakout PCB, aluminum pitot tube (~150–160 mm), silicone tubing, 4-pin **JST-GH 1.25 mm** cable (the "Pixhawk 6C" variant; older "2.4.8" variant uses DF13)
 

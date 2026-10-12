@@ -19,9 +19,9 @@ import math
 
 from . import quaternion as quat
 
-# Home position and airspeed (given)
-HOME_LAT_DEG = 50.000000
-HOME_LON_DEG = 15.000000
+# Home position (synthetic - somewhere in central Bohemia) and airspeed
+HOME_LAT_DEG = 50.0
+HOME_LON_DEG = 15.0
 HOME_ALT_M = 400.0
 AIRSPEED_MPS = 10.0  # horizontal flight speed, held constant along the body axis
 

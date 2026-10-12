@@ -99,8 +99,8 @@ automaticky a vozidlo se objeví samo.
 
 Terén se čte offline z předstažené mřížky ČÚZK **DMR 5G** (otevřená data,
 vertikální přesnost ~0,2 m; výšky Bpv ≈ AMSL). Stažení pro létací oblast
-(default: letiště ze sekce [site] v esp32/local.ini ±10 km, krok 5 m, ~20 MB
-do `data/terrain.npz`):
+(default: letiště ze sekce `[site]` v `esp32/local.ini` ±10 km, krok 5 m,
+~20 MB do `data/terrain.npz`; viz `esp32/local.ini.example`):
 
 ```bash
 ./.venv/bin/python -m cockpitview.terrain_fetch

@@ -2,7 +2,7 @@
 
 ![Quescan G10A-F30 GPS module](img/gps-quescan-g10a-f30.jpg)
 
-- **Ordered:** 1×, AliExpress (Jul 19, 2026)
+- **Ordered:** 1× (AliExpress, Jul 19, 2026)
 - **Product:** [Quescan G10A-F30 M10 GPS GNSS Module, UBX-M10050-KB](https://www.aliexpress.com/item/1005004131946090.html) — Quescan Store
 - **What it is:** GNSS receiver on the u-blox M10 platform (UBX-M10050-KB, ROM SPG 5.10), ceramic patch antenna, 28×28×8 mm, 13 g
 

@@ -381,8 +381,9 @@ Reasoning behind the choices:
     modem sleep drops ESP-NOW frames); peers are the factory MACs from
     `platformio.ini`, compiled in as `-DPEER_MAC_STR` by `tools/peer_mac.py`;
   - the radio hop is encrypted with ESP-NOW's built-in PMK/LMK (CCMP in
-    hardware, `lib/protocol/link_keys.h`, air + ground only — the USB side
-    is trusted). A key/channel mismatch fails silently: a dead link right
+    hardware; the keys live in the git-ignored `esp32/local.ini`, see
+    `local.ini.example`, and reach both firmwares as `-DLINK_*_HEX` via
+    `tools/link_keys.py` — air + ground only, the USB side is trusted). A key/channel mismatch fails silently: a dead link right
     after touching either means suspect the keys first;
   - RSSI of the peer's frames is sniffed via a promiscuous-mode callback —
     the Arduino core 2.x / IDF 4.4 ESP-NOW receive callback carries no RSSI

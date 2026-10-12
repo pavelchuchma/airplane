@@ -62,7 +62,11 @@ decisions. Keep it updated when the design evolves.
   at 50 Hz and receives 50 Hz `CommandMessage`s (structs + COBS/CRC-16
   framing + shared radio bring-up in `esp32/lib/protocol/`; channel 1, LR
   mode, PMK/LMK encryption, peer MACs injected as `-DPEER_MAC_STR` by
-  `tools/peer_mac.py`). No valid command for 500 ms → failsafe flag in
+  `tools/peer_mac.py`; the keys and the flying site come from the
+  git-ignored `esp32/local.ini` — copy `local.ini.example`, `openssl rand
+  -hex 16` twice, flash both boards; `tools/link_keys.py` aborts the build
+  without it, `cockpitview/localconf.py` reads the `[site]` default for
+  `terrain_fetch`). No valid command for 500 ms → failsafe flag in
   telemetry + `# FAILSAFE` diagnostic (no servos yet, the flag is the whole
   action). Air USB serial (115200) carries only `#` diagnostics now — the
   CSV output is gone. `esp32/src/ground` is the protocol-agnostic bridge:

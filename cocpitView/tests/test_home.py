@@ -13,7 +13,7 @@ from cockpitview.home import HomePoint
 from cockpitview.hud import format_distance
 from cockpitview.telemetry import TelemetrySnapshot
 
-HOME_LAT, HOME_LON = 50.000000, 15.000000
+HOME_LAT, HOME_LON = 50.0, 15.0
 BARO_REL_M = 3.0  # the plane booted 3 m below where it now stands
 
 

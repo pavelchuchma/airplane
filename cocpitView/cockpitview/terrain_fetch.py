@@ -9,7 +9,8 @@ needs no GIS library at all, just numpy.
 
 The result is a .npz with elevations in int16 decimeters (Bpv heights,
 within ~0.4 m of AMSL - negligible against baro accuracy) plus the grid
-origin/steps in degrees. Default area: home airfield +- 10 km.
+origin/steps in degrees. Default area: the flying site from esp32/local.ini
+[site] (see esp32/local.ini.example) +- 10 km.
 
 Usage:
     ./.venv/bin/python -m cockpitview.terrain_fetch
@@ -27,6 +28,8 @@ import urllib.request
 
 import numpy as np
 import tifffile
+
+from . import localconf
 
 SERVICE_URL = "https://ags.cuzk.cz/arcgis2/rest/services/dmr5g/ImageServer"
 METERS_PER_DEG_LAT = 111_320.0
@@ -76,12 +79,17 @@ def identify(lat_deg, lon_deg):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--lat", type=float, default=50.000000, help="area center latitude (default: home airfield)")
-    parser.add_argument("--lon", type=float, default=15.000000, help="area center longitude")
+    parser.add_argument("--lat", type=float, help="area center latitude (default: [site] in esp32/local.ini)")
+    parser.add_argument("--lon", type=float, help="area center longitude")
     parser.add_argument("--radius-km", type=float, default=10.0, help="half-size of the square area (default: 10)")
     parser.add_argument("--step-m", type=float, default=5.0, help="grid step in meters (default: 5)")
     parser.add_argument("--out", default=DEFAULT_OUT, help="output file (default: data/terrain.npz)")
     args = parser.parse_args()
+    if args.lat is None or args.lon is None:
+        site = localconf.site_center()
+        if site is None:
+            parser.error(f"--lat/--lon not given and no [site] in {localconf.LOCAL_INI} (see local.ini.example)")
+        args.lat, args.lon = site
 
     # One angular step for BOTH axes: exportImage silently rescales the bbox
     # when its aspect ratio does not match the pixel aspect ratio, so pixels

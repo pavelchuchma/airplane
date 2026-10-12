@@ -1,0 +1,18 @@
+; Local, never-committed settings shared by the firmware and cocpitView.
+;
+;   cp local.ini.example local.ini      (local.ini is git-ignored)
+;
+; PlatformIO merges this file via `extra_configs` in platformio.ini;
+; cocpitView reads it with configparser (cockpitview/localconf.py).
+
+[env]
+; ESP-NOW encryption keys, 16 bytes each as 32 hex digits. Generate with
+; `openssl rand -hex 16` (twice). Air and ground must be flashed with the
+; same pair - a mismatch fails silently (frames are dropped, no error).
+custom_link_pmk = 00112233445566778899aabbccddeeff
+custom_link_lmk = ffeeddccbbaa99887766554433221100
+
+[site]
+; Flying site used as the default centre for terrain_fetch (WGS84 degrees).
+lat = 50.000000
+lon = 15.000000

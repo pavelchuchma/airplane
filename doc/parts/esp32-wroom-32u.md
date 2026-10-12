@@ -2,7 +2,7 @@
 
 ![ESP32-WROOM-32U DevKit board](img/esp32-wroom-32u.png)
 
-- **Ordered:** 2× "type 1set" (board + 2.4G antenna with IPEX→SMA pigtail), $7.40/pc, AliExpress (Jul 19, 2026)
+- **Ordered:** 2× "type 1set" (board + 2.4G antenna with IPEX→SMA pigtail), $7.40/pc (AliExpress, Jul 19, 2026)
 - **Product:** [MICRO-WROOM-32U WROVER Module WIFI Module with 2.4G Antenna](https://www.aliexpress.com/item/1005007329234480.html) — Good Luck Electronic Products Store
 - **What it actually is:** generic **ESP32-DevKitC-style board with an ESP32-WROOM-32U module** ("WROVER" in the title is seller keyword spam). Equivalent to Espressif ESP32-DevKitC-32U.
 

@@ -6,10 +6,13 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "link_keys.h"
 #include "messages.h"  // WIFI_CHANNEL
 
 namespace espnowlink {
+
+#ifndef LINK_PMK_HEX
+#error "LINK_PMK_HEX / LINK_LMK_HEX not defined - tools/link_keys.py needs local.ini"
+#endif
 
 namespace {
 const char *lastError_ = "";
@@ -20,7 +23,23 @@ bool parseMac(const char *str, uint8_t out[6]) {
                 &out[0], &out[1], &out[2], &out[3], &out[4], &out[5]) == 6;
 }
 
+bool parseKey(const char *str, uint8_t out[16]) {
+  if (strlen(str) != 32) return false;
+  for (int i = 0; i < 16; ++i) {
+    unsigned byte;
+    if (sscanf(str + 2 * i, "%2x", &byte) != 1) return false;
+    out[i] = (uint8_t)byte;
+  }
+  return true;
+}
+
 bool begin(const uint8_t peerMac[6]) {
+  uint8_t pmk[16], lmk[16];
+  if (!parseKey(LINK_PMK_HEX, pmk) || !parseKey(LINK_LMK_HEX, lmk)) {
+    lastError_ = "bad LINK_PMK_HEX/LINK_LMK_HEX";
+    return false;
+  }
+
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
 
@@ -44,7 +63,7 @@ bool begin(const uint8_t peerMac[6]) {
     return false;
   }
   // PMK must be set after esp_now_init and before adding encrypted peers.
-  if (esp_now_set_pmk(LINK_PMK) != ESP_OK) {
+  if (esp_now_set_pmk(pmk) != ESP_OK) {
     lastError_ = "esp_now_set_pmk failed";
     return false;
   }
@@ -54,7 +73,7 @@ bool begin(const uint8_t peerMac[6]) {
   peer.channel = WIFI_CHANNEL;
   peer.ifidx = WIFI_IF_STA;
   peer.encrypt = true;  // CCMP in hardware; key mismatch fails silently
-  memcpy(peer.lmk, LINK_LMK, sizeof(peer.lmk));
+  memcpy(peer.lmk, lmk, sizeof(peer.lmk));
   if (esp_now_add_peer(&peer) != ESP_OK) {
     lastError_ = "esp_now_add_peer failed";
     return false;

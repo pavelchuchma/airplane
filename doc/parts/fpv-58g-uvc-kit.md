@@ -2,7 +2,7 @@
 
 ![5.8G FPV UVC kit](img/fpv-58g-uvc-kit.jpg)
 
-- **Ordered:** 1× variant **"200mW version"**, AliExpress (Mar 20, 2023, completed)
+- **Ordered:** 1× variant **"200mW version"** (AliExpress, Mar 2023)
 - **Product:** [Ready to Use 5.8G FPV UVC Receiver + 200/600mW Transmitter + CMOS 1200TVL Camera](https://www.aliexpress.com/item/1005004766486947.html) — RC Market Store
 - **What it is:** complete analog FPV chain: mini CVBS camera → 5.8 GHz video transmitter (TS58xx family) → UVC receiver dongle (ROTG01 class) that plugs into an Android phone via OTG
 

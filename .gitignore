@@ -10,3 +10,6 @@ cocpitView/logs/
 
 # PlatformIO
 .pio/
+
+# local secrets / site (see esp32/local.ini.example)
+esp32/local.ini

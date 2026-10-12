@@ -21,14 +21,14 @@ full specs, pinout and wiring notes.
 
 ## Orders
 
-| Order | Date | Item | Qty |
-|---|---|---|---|
-| — | Jul 19, 2026 | MS4525DO pitot kit ("For Pixhawk 6C") | 1 |
-| — | Jul 19, 2026 | ESP32 WROOM-32U board + antenna ("type 1set") | 2 |
-| — | Jul 19, 2026 | GY-91 module | 1 |
-| — | Jul 19, 2026 | Quescan G10A-F30 GPS | 1 |
-| — | Mar 20, 2023 | 5.8G FPV kit, "200mW version" | 1 |
-| — | Jan 7, 2026 | MPU-6050 module (diymore) | 1 |
+| Date | Item | Qty |
+|---|---|---|
+| Jul 19, 2026 | MS4525DO pitot kit ("For Pixhawk 6C") | 1 |
+| Jul 19, 2026 | ESP32 WROOM-32U board + antenna ("type 1set") | 2 |
+| Jul 19, 2026 | GY-91 module | 1 |
+| Jul 19, 2026 | Quescan G10A-F30 GPS | 1 |
+| Mar 20, 2023 | 5.8G FPV kit, "200mW version" | 1 |
+| Jan 7, 2026 | MPU-6050 module (diymore) | 1 |
 
 ## Wiring quick reference (all sensors on one ESP32)
 
