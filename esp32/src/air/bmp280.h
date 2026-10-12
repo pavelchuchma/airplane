@@ -19,6 +19,9 @@ namespace bmp280 {
 // does not match a BMP280.
 bool begin(uint8_t address = 0x76);
 
+// Reads the chip-id register alone. False = no ACK at the address.
+bool readChipId(uint8_t &chipId);
+
 // Reads the latest compensated measurement. Pressure in Pa, temperature
 // in degrees C. Returns false on I2C errors.
 bool read(float &pressurePa, float &temperatureC);

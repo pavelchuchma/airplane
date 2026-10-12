@@ -178,6 +178,7 @@ constexpr uint32_t kSnapshotStaleUs = 200000;  // loop() distrusts a snapshot ol
 // can still stall ~1 s per transaction on a disturbed bus (measured 1006 ms
 // with this set to 20) - which is why all I2C access lives in sensorTask.
 constexpr uint16_t kWireTimeoutMs = 20;
+constexpr uint32_t kSlowTransactionUs = 500000;  // report transactions that hit the ~1 s stall
 constexpr float kAirDensity = 1.225f;  // [kg/m3] fixed sea-level rho - the result is IAS
 
 float gyroBiasX = 0.0f, gyroBiasY = 0.0f, gyroBiasZ = 0.0f;
@@ -518,6 +519,30 @@ bool calibrateGyro() {
   return true;
 }
 
+// Names the sensor whose transaction hit the driver's ~1 s stall.
+void reportSlow(const char *what, uint32_t startUs) {
+  uint32_t tookUs = micros() - startUs;
+  if (tookUs >= kSlowTransactionUs) {
+    Serial.printf("# slow I2C: %s took %u ms\n", what, (unsigned)(tookUs / 1000));
+  }
+}
+
+// One chip-id read at the moment of death separates the failure classes:
+// no ACK = the chip is off the bus (a low on CSB latches the BMP280 into
+// SPI mode until power-on reset), an answer = it talks but its data failed
+// the plausibility check.
+void diagnoseBaroDeath() {
+  uint8_t chipId = 0;
+  uint32_t startUs = micros();
+  bool acked = bmp280::readChipId(chipId);
+  reportSlow("BMP280 chip-id probe", startUs);
+  if (acked) {
+    Serial.printf("# BMP280 still answers (chip-id 0x%02X) - data implausible\n", chipId);
+  } else {
+    Serial.println("# BMP280 no ACK - off the bus (CSB latched into SPI? only a power cycle revives)");
+  }
+}
+
 // Averages 1 s of pressure to define altitude zero at the boot location.
 // The first few samples are discarded while the IIR filter settles.
 // Requires at least half the window, like calibrateGyro().
@@ -581,13 +606,16 @@ void updateBaro(uint32_t nowUs, uint32_t nowMs) {
   // I2C acknowledges per byte but carries no integrity check, so a
   // disturbed bus can deliver garbage that would otherwise decode as a
   // believable-looking altitude.
+  uint32_t startUs = micros();
   bool good = bmp280::read(pressure, temperature) && pressure > 30000.0f && pressure < 110000.0f;
+  reportSlow("BMP280 read", startUs);
   bool wasOk = baroLc.ok;
   uint32_t prevGoodUs = baroLc.lastGoodUs;
   if (!baroLc.onResult(good, nowUs, nowMs)) {
     if (wasOk && !baroLc.ok) {
       altitudeM = NAN;
       climbRate = NAN;
+      diagnoseBaroDeath();
     }
     return;
   }
@@ -619,7 +647,9 @@ void updatePitot(uint32_t nowUs, uint32_t nowMs) {
     return;
   }
   float pressure, temperature;
+  uint32_t startUs = micros();
   bool good = ms4525do::read(pressure, temperature);
+  reportSlow("MS4525DO read", startUs);
   bool wasOk = pitotLc.ok;
   uint32_t prevGoodUs = pitotLc.lastGoodUs;
   if (!pitotLc.onResult(good, nowUs, nowMs)) {
@@ -825,7 +855,9 @@ void sensorTask(void *) {
       int16_t accelRaw[3];
       int16_t gyroRaw[3];
       float ax = 0.0f, ay = 0.0f, az = 0.0f, aMag = 0.0f;
+      uint32_t startUs = micros();
       bool good = mpuReadRaw(accelRaw, gyroRaw);
+      reportSlow("MPU-6500 read", startUs);
       if (good) {
         ax = accelRaw[0] * kAccelScale;
         ay = accelRaw[1] * kAccelScale;
@@ -863,7 +895,9 @@ void sensorTask(void *) {
 
         if ((int32_t)(nowMs - nextConfigCheckMs) >= 0) {
           nextConfigCheckMs = nowMs + kMpuConfigCheckMs;
+          uint32_t checkStartUs = micros();
           mpuCheckConfig();
+          reportSlow("MPU-6500 config check", checkStartUs);
         }
       }
     }

@@ -99,10 +99,20 @@ decisions. Keep it updated when the design evolves.
   (rates peaked at 75 °/s). Verified the same day
   (`2026-10-11_180819.cvlog`, motor run hand-held level and nose-up):
   gyro-rate rms 0.03–0.06 rad/s, attitude swing 0.4–2° per second,
-  no wander. That log also has the baro dead for the whole session
-  (`baro_ok` 0 from boot, cause unknown — no USB, so no `#` lines) and
-  five ~0.85 s sensor-task stalls at the end while the airframe sat
-  upside down; neither is explained yet.
+  no wander. That log also has the baro dead for the whole session:
+  the boot (18:07:08, spanning `180628` seg3, `180819` and `181117` seg0,
+  7 min) had the baro present, calibrated and sane for 7 s, then it
+  NACKed instantly and for good while the MPU on the same board stayed
+  healthy; only the next battery power cycle revived it. Best fit: the
+  floating CSB pin on the GY-91 glitched low and latched the BMP280 into
+  SPI mode (irreversible until power-on reset) — tie CSB/NCS to 3V3
+  (`doc/todo/001-gy91-csb-ncs-tie-high.md`). Diagnostics added for the
+  next occurrence (USB `#` lines only): a chip-id probe at baro death
+  (`no ACK` vs `still answers`) and `# slow I2C: <sensor> took N ms` for
+  any transaction ≥ 500 ms. The
+  ~1 s sensor-task stalls (55 in that boot, none in any other boot that
+  day) appeared only after the death and are not just the 2 s baro
+  probes; which transaction stalls is still unknown.
   The BMP280 barometer is read
   (`src/air/bmp280.cpp`): altitude relative to boot location +
   low-pass-filtered vario. I2C robustness: **all I2C access lives in a

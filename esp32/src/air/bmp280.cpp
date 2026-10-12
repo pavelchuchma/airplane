@@ -109,7 +109,7 @@ bool begin(uint8_t address) {
   deviceAddress = address;
 
   uint8_t chipId = 0;
-  if (!readRegisters(kRegChipId, &chipId, 1) || chipId != kExpectedChipId) {
+  if (!readChipId(chipId) || chipId != kExpectedChipId) {
     return false;
   }
 
@@ -124,6 +124,10 @@ bool begin(uint8_t address) {
   writeRegister(kRegCtrlMeas, kCtrlMeasValue);
   delay(50);  // first conversion at x16/x2 oversampling takes ~44 ms
   return true;
+}
+
+bool readChipId(uint8_t &chipId) {
+  return readRegisters(kRegChipId, &chipId, 1);
 }
 
 bool read(float &pressurePa, float &temperatureC) {
