@@ -20,12 +20,12 @@ constexpr int kSamplesPerRead = 64;
 // full pack: true nodes 4.11/8.25/12.35 V vs firmware's 4.21/8.47/12.59 V
 // with the nominal divider ratios (2.00/3.80/6.60) - all three channels
 // read 2-2.7 % high (resistor tolerance + residual ADC gain error).
-// Re-checked 2026-10-20 after the move to IDF 5 adc_cali: N1 still within
-// the DMM's resolution, N2/N3 read 0.69 % low (7.756/11.619 V vs 7.81/11.70 V)
-// and were scaled up by that ratio.
+// Re-checked 2026-10-20 after the move to IDF 5 adc_cali: unchanged within
+// 0.2 % on a warm board; a cold board (just in from outdoors) read N2/N3
+// 0.7 % low, so calibrate warm and repeat.
 // TODO: add the second point (near-empty pack) to pin down the offsets;
 // read the raw telemetry cellMv for that, not the 10 mV-rounded HUD.
-constexpr float kCalScale[3] = {1.9525f, 3.7271f, 6.5193f};
+constexpr float kCalScale[3] = {1.9525f, 3.7013f, 6.4742f};
 constexpr float kCalOffsetMv[3] = {0.0f, 0.0f, 0.0f};
 
 adc_oneshot_unit_handle_t adcUnit = nullptr;

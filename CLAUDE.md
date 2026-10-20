@@ -313,10 +313,12 @@ decisions. Keep it updated when the design evolves.
   vs multimeter — channels read 2-2.7 % high on nominal ratios); a repeat on
   2026-08-29 confirmed it to 0.08-0.16 % per node but could not yield the
   offsets — both points sit at a full pack, ~1 % apart, so the two-point fit
-  is singular (node 3 came out slope 6.02, offset +996 mV). The move to
-  IDF 5 `adc_oneshot` + `adc_cali` (2026-10-20) shifted N2/N3 by −0.69 %
-  against the DMM (N1 unchanged) — rescaled; re-check after any ADC library
-  change. The pack is a
+  is singular (node 3 came out slope 6.02, offset +996 mV). After the move
+  to IDF 5 `adc_oneshot` + `adc_cali` (2026-10-20) the old constants still
+  hold within 0.2 % on a warm board — but a board cold from outdoors read
+  N2/N3 0.7 % low against the same DMM, so the ADC drifts ~0.5 % with
+  temperature: calibrate on a warm board and repeat the measurement. The
+  pack is a
   **3S1P Samsung INR18650-30Q** (unprotected cells, 15 A/cell continuous,
   `doc/parts/battery-samsung-30q.md`); land at 3.5 V/cell resting, never
   below 3.0. Full throttle costs **~0.3-0.36 V/cell** of indicated voltage

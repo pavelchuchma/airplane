@@ -102,10 +102,12 @@ air firmware must build with `-DCORE_DEBUG_LEVEL=0` (or silence the
   RSSI −47 dBm), outdoor battery session (`232229`, 100 s: GPS cold-start
   fix at 70 s, 12 sats, hacc 0.85 m, home + baro locked, all sensors OK, 0 %
   loss down to −95 dBm).
-- Battery vs DMM (`232951`): N1 3.897 vs 3.90 V, N2 7.756 vs 7.81 V, N3
-  11.619 vs 11.70 V - N2/N3 −0.69 % (on 2.0.17 they were within 0.16 %), so
-  the new calibration code shifts those two channels; `kCalScale` N2/N3
-  rescaled by 7.81/7.756.
+- Battery vs DMM: `232951` (board cold, straight in from outdoors) read
+  N2/N3 0.69 % low; a rescale based on it then read 0.5-0.6 % *high* in
+  `233859` (warm board, 147 s, DMM 3.90/7.81/11.71 V), where the original
+  constants would have been within 0.1-0.2 %. The DMM showed 7.81 V on C2
+  both times, so the ADC moved, not the pack - temperature. Original
+  constants kept; the new ADC code reads like the old one.
 
 ## Phase 2 — native I2C behind `i2cbus.h`
 
