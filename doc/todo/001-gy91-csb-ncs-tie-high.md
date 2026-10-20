@@ -2,6 +2,12 @@
 
 Status: **open** (2026-10-11). Hardware change, needs the airframe open.
 
+Note 2026-10-20: the baro death happened in the same period as the bus
+glitches of `doc/todo/002`, whose trigger turned out to be a cold ground
+joint (resoldered). A ground bouncing on battery may well have been what
+pulled the floating CSB low, so this may not recur - but tying CSB/NCS high
+is still the cheap, permanent fix.
+
 ## Problem
 
 On 2026-10-11 the barometer died 10 s into a boot and stayed dead for the
@@ -38,9 +44,10 @@ that no longer ACKs its address, so the fix is in the wiring.
 
 ## Verification
 
-The firmware now prints `# BMP280 no ACK - off the bus (CSB latched into
-SPI? ...)` when the baro dies without answering, and `# slow I2C: <sensor>
-took N ms` for any transaction that hits the ~1 s driver stall (both only on
-USB serial). After the change, boot several times with USB attached, handle
-the airframe (roll it over, lay it on its back) and confirm neither line
-appears and `TELEM_FLAG_BARO_OK` stays up for the session.
+The firmware prints `BMP280 no ACK - off the bus (CSB latched into SPI?
+...)` when the baro dies without answering its address, and an
+`I2C BMP280 1s: ...` report for any bus trouble; since protocol v7 both
+reach `cocpitView/logs/<stem>.air.log` on battery too. After the change,
+run several battery sessions, handle the airframe (roll it over, lay it on
+its back) and confirm neither line appears and `TELEM_FLAG_BARO_OK` stays
+up for the session.

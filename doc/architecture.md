@@ -166,10 +166,10 @@ is reported absent, so a dead sensor never looks like a pending
 calibration. Baro and pitot calibrate first — handling the plane costs
 them sub-pascal / sub-metre errors.
 Bus-level faults are handled separately: boot clocks a stuck slave free
-before `Wire.begin()` (an MCU reset mid-transaction otherwise leaves SDA
+at boot (an MCU reset mid-transaction otherwise leaves SDA
 held low across reboots, taking down every device on the bus), and when
 every present sensor has been silent for 2 s in flight the same rescue
-reruns (`Wire.end()` → clear → `Wire.begin()`, every 5 s) — a disturbance
+reruns (every 5 s) — a disturbance
 can abort a transaction mid-byte with the same SDA-stuck result. loop()
 distrusts a sensor snapshot older than 200 ms and clears the OK flags, so
 even a wedged sensor task cannot keep telemetry looking healthy.
@@ -179,7 +179,13 @@ a disturbed bus no matter what `Wire.setTimeOut` says (measured 1006 ms with
 a 20 ms timeout), and with sensors read inline that collapsed the 50 Hz loop
 — telemetry, failsafe timing and all — to ~0.5 Hz. The loop only copies the
 task's latest snapshot under a spinlock, so a bus pathology can only ever
-delay sensor data, never the link.
+delay sensor data, never the link. The same driver behaviour later froze
+the whole snapshot for ~1 s on every glitched MS4525DO read (a cold ground
+joint, doc/todo/002), so the bus is now bit-banged (`src/air/i2cbus.cpp`):
+every wait is bounded, a slave holding SDA is freed right after the
+transaction, and each transaction says how it failed (NACK, clock stretch,
+SDA conflict, bus busy) — the driver could do none of that. That is what
+found the joint.
 
 The ESP-NOW link is implemented: the air firmware sends one `TelemetryMessage`
 per sample (50 Hz) and receives `CommandMessage`s (lib/protocol/messages.h),

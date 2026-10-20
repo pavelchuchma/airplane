@@ -1,8 +1,9 @@
 #include "bmp280.h"
 
 #include <Arduino.h>
-#include <Wire.h>
 #include <math.h>
+
+#include "i2cbus.h"
 
 namespace bmp280 {
 namespace {
@@ -33,25 +34,11 @@ int16_t digP2, digP3, digP4, digP5, digP6, digP7, digP8, digP9;
 int32_t tFine;  // shared between the T and P compensation formulas
 
 bool writeRegister(uint8_t reg, uint8_t value) {
-  Wire.beginTransmission(deviceAddress);
-  Wire.write(reg);
-  Wire.write(value);
-  return Wire.endTransmission() == 0;
+  return i2cbus::writeRegs(deviceAddress, reg, &value, 1) == i2cbus::Status::Ok;
 }
 
 bool readRegisters(uint8_t reg, uint8_t *buf, uint8_t len) {
-  Wire.beginTransmission(deviceAddress);
-  Wire.write(reg);
-  if (Wire.endTransmission(false) != 0) {
-    return false;
-  }
-  if (Wire.requestFrom(deviceAddress, len) != len) {
-    return false;
-  }
-  for (uint8_t i = 0; i < len; i++) {
-    buf[i] = Wire.read();
-  }
-  return true;
+  return i2cbus::readRegs(deviceAddress, reg, buf, len) == i2cbus::Status::Ok;
 }
 
 bool readCalibration() {

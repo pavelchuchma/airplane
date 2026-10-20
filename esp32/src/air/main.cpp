@@ -1,7 +1,7 @@
 /*
  * Air side: sensors, servos, autopilot.
  *
- * Reads the GY-91 sensor board over I2C (Wire):
+ * Reads the GY-91 sensor board over I2C (bit-banged, i2cbus.h):
  *   - accelerometer/gyroscope (MPU-6500 at 0x68; the board is sold as
  *     MPU-9250 but ours is a 6-axis clone without the AK8963 magnetometer).
  *     Roll/pitch come from a complementary filter; yaw is gyro-integration
@@ -31,12 +31,11 @@
  * LogMessage, at most every kLogSendIntervalMs and only while commands
  * arrive, and end up in cocpitView's .air.log.
  *
- * All I2C sensor access runs in a dedicated FreeRTOS task: the Arduino
- * I2C stack can stall ~1 s per transaction when a device drops off the
- * bus (Wire.setTimeOut does not bound that path — the driver keeps waiting
- * while the HW FSM claims progress), and a stall like that must never
- * touch the safety-critical 50 Hz link loop. loop() only consumes the
- * latest published sensor snapshot.
+ * All I2C sensor access runs in a dedicated FreeRTOS task, so that no bus
+ * trouble can ever touch the safety-critical 50 Hz link loop; loop() only
+ * consumes the latest published sensor snapshot. The bus itself is
+ * bit-banged (i2cbus.h) with bounded waits: the Arduino/IDF driver stalled
+ * ~1 s per transaction regardless of Wire.setTimeOut.
  *
  * The peer (ground board) MAC comes from -DPEER_MAC_STR, injected from
  * [env:ground] custom_board_mac by tools/peer_mac.py.
@@ -59,7 +58,6 @@
  */
 
 #include <Arduino.h>
-#include <Wire.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 
@@ -68,6 +66,7 @@
 #include "diag.h"
 #include "espnow_link.h"
 #include "gps.h"
+#include "i2cbus.h"
 #include "messages.h"
 #include "ms4525do.h"
 
@@ -80,8 +79,6 @@ constexpr uint8_t kRegAccelConfig = 0x1C;
 constexpr uint8_t kRegAccelConfig2 = 0x1D;
 constexpr uint8_t kRegAccelStart = 0x3B;
 constexpr uint8_t kRegPowerManagement1 = 0x6B;
-constexpr int kPinSda = 21;
-constexpr int kPinScl = 22;
 
 // MPU-6500 register configuration. The on-chip DLPFs are the anti-aliasing
 // filters for our 50 Hz polling (Nyquist 25 Hz): without them the chip
@@ -181,20 +178,16 @@ constexpr uint16_t kCellMinMv = 2500;
 constexpr uint16_t kCellMaxMv = 4350;
 
 constexpr int kRecoveryStreak = 10;          // consecutive good reads reviving a dead sensor
-constexpr uint32_t kProbeIntervalMs = 2000;  // dead-sensor probe cadence (failed probes are slow)
+constexpr uint32_t kProbeIntervalMs = 2000;  // dead-sensor probe cadence
 constexpr uint32_t kBusRescueAfterUs = 2000000;  // nothing good on the bus this long -> rescue
 constexpr uint32_t kBusRescueIntervalMs = 5000;  // bus-rescue attempt cadence
-// 100 kHz, not 400: 400 kHz is the MS4525DO's spec maximum, and that one
-// device hangs on a wire harness off the well-pulled-up GY-91 board (5 V
-// part judging a 3.3 V bus, ~10 k pull-ups). Bus traffic is ~30 B per
-// 20 ms tick, so a quarter of the bandwidth is still plenty.
-constexpr uint32_t kI2cClockHz = 100000;
 constexpr uint32_t kSnapshotStaleUs = 200000;  // loop() distrusts a snapshot older than this
-// Shortens SOME failure paths but does NOT bound the worst ones: the driver
-// can still stall ~1 s per transaction on a disturbed bus (measured 1006 ms
-// with this set to 20) - which is why all I2C access lives in sensorTask.
-constexpr uint16_t kWireTimeoutMs = 20;
-constexpr uint32_t kSlowTransactionUs = 500000;  // report transactions that hit the ~1 s stall
+// A bit-banged data read takes 0.5-3 ms; WiFi preemption adds a little.
+constexpr uint32_t kSlowReadUs = 10000;
+// Measured stretches include WiFi interrupts preempting the wait (seen up to
+// ~0.5 ms on a clean bus), so only half the stretch timeout is news.
+constexpr uint32_t kBusReportStretchUs = 1000;
+constexpr uint32_t kBusReportIntervalMs = 1000;
 constexpr float kAirDensity = 1.225f;  // [kg/m3] fixed sea-level rho - the result is IAS
 
 float gyroBiasX = 0.0f, gyroBiasY = 0.0f, gyroBiasZ = 0.0f;
@@ -212,18 +205,16 @@ float iasMps = NAN;
 uint16_t cellMv[3] = {0, 0, 0};  // per-cell [mV], 0 = unknown
 
 // One lifecycle for all three I2C sensors. The only failure mode designed
-// for is a temporary bus disturbance: transactions fail (slowly - see the
-// file header) or ACK corrupted data for a while, then the bus recovers.
-// The sensors keep their power - and therefore their config registers -
-// throughout, so recovery never re-initializes anything: a plausible data
-// read IS the proof of health. Death is time-based (failed transactions
-// can take ~1 s each), revival needs an unbroken streak of good reads
+// for is a temporary bus disturbance: transactions fail or ACK corrupted
+// data for a while, then the bus recovers. The sensors keep their power -
+// and therefore their config registers - throughout, so recovery never
+// re-initializes anything: a plausible data read IS the proof of health.
+// Death is time-based, revival needs an unbroken streak of good reads
 // (garbage off a floating bus occasionally passes the plausibility checks,
 // and a single such sample must not blink the frozen HUD back on; the
 // streak samples themselves are discarded). A dead sensor is probed at
-// most every kProbeIntervalMs so its slow failures don't starve the
-// healthy sensors; a successful probe does not re-arm the throttle, so the
-// streak then builds at the full sample rate.
+// most every kProbeIntervalMs; a successful probe does not re-arm the
+// throttle, so the streak then builds at the full sample rate.
 struct SensorLifecycle {
   SensorLifecycle(const char *name, uint32_t deadAfterUs)
       : name(name), deadAfterUs(deadAfterUs) {}
@@ -402,53 +393,68 @@ void updateLinkStats(uint32_t nowMs) {
 // An MCU reset in the middle of an I2C read leaves the addressed slave
 // holding SDA low forever (the sensors keep their power across ESP32
 // resets), which kills the whole bus - every device reads as "not found".
-// The standard cure before Wire.begin(): clock SCL until the slave
-// releases SDA, then issue a STOP.
+// i2cbus::clear() clocks it free; this only says what happened.
 void clearI2cBus() {
-  pinMode(kPinSda, INPUT_PULLUP);
-  pinMode(kPinScl, INPUT_PULLUP);
-  delayMicroseconds(10);
-  if (digitalRead(kPinSda) == HIGH) {
-    return;  // bus is free
+  bool wasStuck = false;
+  bool idle = i2cbus::clear(&wasStuck);
+  if (wasStuck) {
+    diag::print("I2C bus stuck (SDA low) - clocking it free");
   }
-  diag::print("I2C bus stuck (SDA low) - clocking it free");
-  pinMode(kPinScl, OUTPUT_OPEN_DRAIN);
-  digitalWrite(kPinScl, HIGH);
-  for (int i = 0; i < 9 && digitalRead(kPinSda) == LOW; i++) {
-    digitalWrite(kPinScl, LOW);
-    delayMicroseconds(5);
-    digitalWrite(kPinScl, HIGH);
-    delayMicroseconds(5);
-  }
-  // STOP condition: SDA low -> high while SCL is high.
-  pinMode(kPinSda, OUTPUT_OPEN_DRAIN);
-  digitalWrite(kPinSda, LOW);
-  delayMicroseconds(5);
-  digitalWrite(kPinSda, HIGH);
-  delayMicroseconds(5);
-  if (digitalRead(kPinSda) == LOW) {
+  if (!idle) {
     diag::print("I2C bus clear failed - check wiring/power");
   }
 }
 
+// Per-sensor record of how its data reads went, reported once a second
+// only when something happened - the trail that tells a misbehaving sensor
+// (NACKs, clock stretching, SDA conflicts) from a clean bus.
+struct BusStats {
+  explicit BusStats(const char *name) : name(name) {}
+
+  const char *name;
+  uint16_t count[i2cbus::kStatusCount] = {};
+  uint32_t maxStretchUs = 0;
+  uint32_t maxTookUs = 0;
+  uint16_t cleared = 0;
+
+  void note(uint32_t startUs) {
+    count[(int)i2cbus::lastStatus()]++;
+    cleared += i2cbus::lastCleared();
+    maxStretchUs = max(maxStretchUs, i2cbus::lastMaxStretchUs());
+    maxTookUs = max(maxTookUs, (uint32_t)(micros() - startUs));
+  }
+
+  void report() {
+    bool errors = false;
+    for (int i = 1; i < i2cbus::kStatusCount; i++) {
+      errors = errors || count[i] > 0;
+    }
+    if (errors || cleared || maxStretchUs >= kBusReportStretchUs || maxTookUs >= kSlowReadUs) {
+      char text[96];
+      int len = snprintf(text, sizeof(text), "%u ok", count[0]);
+      for (int i = 1; i < i2cbus::kStatusCount && len < (int)sizeof(text); i++) {
+        if (count[i] > 0) {
+          len += snprintf(text + len, sizeof(text) - len, ", %u %s", count[i],
+                          i2cbus::statusName((i2cbus::Status)i));
+        }
+      }
+      diag::print("I2C %s 1s: %s, %u bus freed, max stretch %u us, max %.1f ms", name, text,
+                  cleared, (unsigned)maxStretchUs, maxTookUs / 1000.0f);
+    }
+    *this = BusStats(name);
+  }
+};
+
+BusStats imuBus("MPU-6500");
+BusStats baroBus("BMP280");
+BusStats pitotBus("MS4525DO");
+
 bool mpuWriteRegister(uint8_t reg, uint8_t value) {
-  Wire.beginTransmission(kMpuAddress);
-  Wire.write(reg);
-  Wire.write(value);
-  return Wire.endTransmission() == 0;
+  return i2cbus::writeRegs(kMpuAddress, reg, &value, 1) == i2cbus::Status::Ok;
 }
 
 bool mpuReadRegister(uint8_t reg, uint8_t &value) {
-  Wire.beginTransmission(kMpuAddress);
-  Wire.write(reg);
-  if (Wire.endTransmission(false) != 0) {
-    return false;
-  }
-  if (Wire.requestFrom(kMpuAddress, (uint8_t)1, (uint8_t) true) != 1) {
-    return false;
-  }
-  value = Wire.read();
-  return true;
+  return i2cbus::readRegs(kMpuAddress, reg, &value, 1) == i2cbus::Status::Ok;
 }
 
 bool mpuWriteConfig() {
@@ -489,23 +495,14 @@ int16_t toBodyFrame(int16_t raw, int axis) {
 // complementary filter converges to a bogus roll -135 / pitch +35 deg
 // instead of freezing.
 bool mpuReadRaw(int16_t *accel, int16_t *gyro) {
-  Wire.beginTransmission(kMpuAddress);
-  Wire.write(kRegAccelStart);
-  if (Wire.endTransmission(false) != 0) {
+  uint8_t b[14];  // accel XYZ, temperature (unused), gyro XYZ - big-endian
+  if (i2cbus::readRegs(kMpuAddress, kRegAccelStart, b, sizeof(b)) != i2cbus::Status::Ok) {
     return false;
   }
-  if (Wire.requestFrom(kMpuAddress, (uint8_t)14, (uint8_t) true) != 14) {
-    return false;
+  for (int i = 0; i < 3; i++) {
+    accel[i] = (int16_t)(b[2 * i] << 8 | b[2 * i + 1]);
+    gyro[i] = (int16_t)(b[8 + 2 * i] << 8 | b[9 + 2 * i]);
   }
-
-  accel[0] = (Wire.read() << 8) | Wire.read();
-  accel[1] = (Wire.read() << 8) | Wire.read();
-  accel[2] = (Wire.read() << 8) | Wire.read();
-  Wire.read();
-  Wire.read();  // temperature, unused
-  gyro[0] = (Wire.read() << 8) | Wire.read();
-  gyro[1] = (Wire.read() << 8) | Wire.read();
-  gyro[2] = (Wire.read() << 8) | Wire.read();
 
   for (int i = 0; i < 3; i++) {
     accel[i] = toBodyFrame(accel[i], i);
@@ -601,27 +598,20 @@ bool calibrateGyroWhenStill() {
   }
 }
 
-// Names the sensor whose transaction hit the driver's ~1 s stall.
-void reportSlow(const char *what, uint32_t startUs) {
-  uint32_t tookUs = micros() - startUs;
-  if (tookUs >= kSlowTransactionUs) {
-    diag::print("slow I2C: %s took %u ms", what, (unsigned)(tookUs / 1000));
-  }
-}
-
 // One chip-id read at the moment of death separates the failure classes:
 // no ACK = the chip is off the bus (a low on CSB latches the BMP280 into
 // SPI mode until power-on reset), an answer = it talks but its data failed
 // the plausibility check.
 void diagnoseBaroDeath() {
   uint8_t chipId = 0;
-  uint32_t startUs = micros();
   bool acked = bmp280::readChipId(chipId);
-  reportSlow("BMP280 chip-id probe", startUs);
+  i2cbus::Status status = i2cbus::lastStatus();
   if (acked) {
     diag::print("BMP280 still answers (chip-id 0x%02X) - data implausible", chipId);
-  } else {
+  } else if (status == i2cbus::Status::AddrNack) {
     diag::print("BMP280 no ACK - off the bus (CSB latched into SPI? only a power cycle revives)");
+  } else {
+    diag::print("BMP280 chip-id probe failed: %s - the bus, not the chip", i2cbus::statusName(status));
   }
 }
 
@@ -690,7 +680,7 @@ void updateBaro(uint32_t nowUs, uint32_t nowMs) {
   // believable-looking altitude.
   uint32_t startUs = micros();
   bool good = bmp280::read(pressure, temperature) && pressure > 30000.0f && pressure < 110000.0f;
-  reportSlow("BMP280 read", startUs);
+  baroBus.note(startUs);
   bool wasOk = baroLc.ok;
   uint32_t prevGoodUs = baroLc.lastGoodUs;
   if (!baroLc.onResult(good, nowUs, nowMs)) {
@@ -731,7 +721,7 @@ void updatePitot(uint32_t nowUs, uint32_t nowMs) {
   float pressure, temperature;
   uint32_t startUs = micros();
   bool good = ms4525do::read(pressure, temperature);
-  reportSlow("MS4525DO read", startUs);
+  pitotBus.note(startUs);
   bool wasOk = pitotLc.ok;
   uint32_t prevGoodUs = pitotLc.lastGoodUs;
   if (!pitotLc.onResult(good, nowUs, nowMs)) {
@@ -768,9 +758,7 @@ void updateBattery(uint32_t nowUs, uint32_t nowMs) {
   lastAttemptUs = nowUs;
 
   uint16_t mv[3];
-  uint32_t startUs = micros();
   battery::read(mv);
-  reportSlow("battery ADC read", startUs);
   bool good = true;
   for (uint16_t v : mv) {
     good = good && v >= kCellMinMv && v <= kCellMaxMv;
@@ -870,11 +858,7 @@ void tryBusRescue(uint32_t nowUs, uint32_t nowMs) {
   }
   nextRescueMs = nowMs + kBusRescueIntervalMs;
   diag::print("whole I2C bus dead - re-clocking it free");
-  Wire.end();
   clearI2cBus();
-  Wire.begin();
-  Wire.setClock(kI2cClockHz);  // begin() resets the clock to its default
-  Wire.setTimeOut(kWireTimeoutMs);
   // Probe immediately instead of waiting out the per-sensor throttles.
   imuLc.nextProbeMs = baroLc.nextProbeMs = pitotLc.nextProbeMs = nowMs;
 }
@@ -883,23 +867,16 @@ void tryBusRescue(uint32_t nowUs, uint32_t nowMs) {
 // this is a separate task. Bring-up, calibration and the 50 Hz sampling
 // all happen here; a stalled transaction only delays the next sample.
 void sensorTask(void *) {
+  i2cbus::begin();
   clearI2cBus();
-  Wire.begin();
-  Wire.setClock(kI2cClockHz);
-  Wire.setTimeOut(kWireTimeoutMs);
 
   // Presence is decided once, here: the sensors never lose power in
-  // flight, so one absent now cannot appear later - and probing an absent
-  // device costs ~1 s per failed transaction, forever.
+  // flight, so one absent now cannot appear later.
   imuLc.present = probeImu();
   baroLc.present = probeBaro();
   pitotLc.present = probePitot();
-#ifdef AIR_NO_BATTERY
-  diag::print("battery reading disabled by the AIR_NO_BATTERY build flag");
-#else
   battery::begin();
   battLc.present = probeBattery();
-#endif
 
   // Boot calibrations, one retry each: a transient bus glitch during the
   // window must not cost the whole flight's data. A sensor whose
@@ -946,7 +923,7 @@ void sensorTask(void *) {
       float ax = 0.0f, ay = 0.0f, az = 0.0f, aMag = 0.0f;
       uint32_t startUs = micros();
       bool good = mpuReadRaw(accelRaw, gyroRaw);
-      reportSlow("MPU-6500 read", startUs);
+      imuBus.note(startUs);
       if (good) {
         ax = accelRaw[0] * kAccelScale;
         ay = accelRaw[1] * kAccelScale;
@@ -984,14 +961,20 @@ void sensorTask(void *) {
 
         if ((int32_t)(nowMs - nextConfigCheckMs) >= 0) {
           nextConfigCheckMs = nowMs + kMpuConfigCheckMs;
-          uint32_t checkStartUs = micros();
           mpuCheckConfig();
-          reportSlow("MPU-6500 config check", checkStartUs);
         }
       }
     }
 
     tryBusRescue(now, nowMs);
+
+    static uint32_t nextBusReportMs = nowMs + kBusReportIntervalMs;
+    if ((int32_t)(nowMs - nextBusReportMs) >= 0) {
+      nextBusReportMs = nowMs + kBusReportIntervalMs;
+      imuBus.report();
+      baroBus.report();
+      pitotBus.report();
+    }
 
     portENTER_CRITICAL(&sensorMux);
     sensorShared.roll = roll;
@@ -1098,10 +1081,9 @@ void loop() {
   portENTER_CRITICAL(&sensorMux);
   s = sensorShared;
   portEXIT_CRITICAL(&sensorMux);
-  // A wedged sensor task (a transaction the driver never times out of)
-  // must not keep publishing pre-failure data as healthy: age out the OK
-  // flags. A single ~1 s stalled transaction blanks all three for its
-  // duration - honest, the data in the snapshot really is that old.
+  // A wedged sensor task must not keep publishing pre-failure data as
+  // healthy: age out the OK flags - honest, the data in the snapshot really
+  // is that old.
   if (now - s.snapshotUs > kSnapshotStaleUs) {
     s.baroOk = s.pitotOk = s.imuOk = s.battOk = s.imuCalibrating = false;
   }

@@ -70,6 +70,7 @@ the battery ADC is never read, battery reports absent, and a `diag` line
 says why. Same firmware otherwise, so a battery session with and without it
 answers hypothesis 2 of todo 002 from the stall counts alone. Also
 `updateBattery()` gets the same `reportSlow()` timing as the I2C reads.
+(Both removed again on 2026-10-20 once the ADC was ruled out.)
 
 ## cocpitView
 

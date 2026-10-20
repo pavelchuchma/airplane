@@ -124,23 +124,18 @@ decisions. Keep it updated when the design evolves.
   SPI mode (irreversible until power-on reset) — tie CSB/NCS to 3V3
   (`doc/todo/001-gy91-csb-ncs-tie-high.md`). Diagnostics added for the
   next occurrence (in the `.air.log` since v7): a chip-id probe at baro death
-  (`no ACK` vs `still answers`) and `# slow I2C: <sensor> took N ms` for
-  any transaction ≥ 500 ms.
-  The ~1 s sensor-task stalls are a separate, open problem: across all
-  logs they appear only in boots with the balance lead connected and only
-  since 2026-10-11 (107 in `164858`, a stationary bench session on the
-  firmware *before* the IMU config check; 21–50 in later battery boots;
-  0–1 in every USB boot and in every battery boot of Aug–Sep). Not the
-  motor (cells steady), not orientation, not the per-second config check.
-  Each stall freezes the snapshot for exactly ~1.0 s, so `loop()` drops
-  all OK flags for ~0.8 s (the HUD "stutter"). Which transaction stalls is
-  unknown — since v7 the `slow I2C` lines (now also timing the battery ADC
-  read) reach the `.air.log` on battery too, so the next battery session
-  names it. The ADC hypothesis is tested by flashing with
-  `PLATFORMIO_BUILD_FLAGS=-DAIR_NO_BATTERY` (battery never read) and
-  counting stalls on battery: stalls stay → BEC/wiring (floating CSB/NCS,
-  `doc/todo/001`), vanish → the ADC path. Full per-boot table, hypotheses
-  and the experiment: `doc/todo/002-sensor-task-1s-stalls-on-battery.md`.
+  (`no ACK` vs `still answers` vs a bus failure) plus the per-sensor
+  `I2C <sensor> 1s: ...` bus reports.
+  The ~1 s sensor-task stalls (battery boots only, 2026-10-11 … 10-20; each
+  froze the whole snapshot, so `loop()` dropped all OK flags — the HUD
+  "stutter") are **resolved**: the trigger was a cold ground joint in the
+  airframe wiring that made the MS4525DO glitch on the bus whenever the
+  airframe was closed on battery (resoldered 2026-10-20, 381 s clean
+  since), and the second came from the Arduino/IDF I2C driver, which
+  turned each glitched read into a ~1 s wait — hence the bit-banged bus
+  (below), where a glitch costs one sample. How it was narrowed down
+  (VTX, ADC, timing, open vs closed airframe), and why the 1 s is *not*
+  the IDF alive interval: `doc/todo/002-sensor-task-1s-stalls-on-battery.md`.
   **Gyro bias calibration waits for stillness** (protocol v6,
   `calibrateGyroWhenStill()`): a 1 s window with every axis within 3 °/s,
   |a| within 1 g ± 0.1 g, no read gap > 100 ms, |bias| ≤ 10 °/s; rejected
@@ -158,9 +153,21 @@ decisions. Keep it updated when the design evolves.
   (`src/air/bmp280.cpp`): altitude relative to boot location +
   low-pass-filtered vario. I2C robustness: **all I2C access lives in a
   dedicated FreeRTOS task** (`sensorTask`, core 0) — the Arduino/IDF I2C
-  driver stalls ~1 s per transaction on a disturbed bus regardless of
-  `Wire.setTimeOut` (measured), which used to collapse the 50 Hz link loop
-  to ~0.5 Hz; `loop()` (core 1) only copies a `SensorSnapshot` under a
+  driver stalled ~1 s per transaction on a disturbed bus regardless of
+  `Wire.setTimeOut` (measured; where in the driver stack is unknown), which
+  used to collapse the 50 Hz link loop to ~0.5 Hz. Since 2026-10-20 the bus is **bit-banged** (`src/air/i2cbus.cpp`,
+  plan `doc/plans/2026-10-20-soft-i2c.md`, ~90 kHz, open-drain GPIO21/22
+  with internal pull-ups, Wire no longer used): every wait is bounded (2 ms
+  clock-stretch timeout, a data read takes 0.5–3 ms), and each transaction
+  reports `ok`/`bus-busy`/`addr-nack`/`data-nack`/`stretch-timeout`/
+  `sda-conflict` plus its longest stretch; after every transaction both
+  lines are checked and a slave left holding SDA is clocked free at once
+  (`N bus freed`). Per sensor these are summed and reported once a second
+  as an `I2C <sensor> 1s: ...` diag line *only* when something happened
+  (an error, a freed bus, a stretch ≥ 1 ms or a read ≥ 10 ms; measured
+  stretches include WiFi-interrupt preemption, up to ~0.5 ms on a clean
+  bus), so a clean bus leaves the `.air.log` silent; `loop()` (core 1)
+  only copies a `SensorSnapshot` under a
   spinlock and never touches the bus, and distrusts a snapshot older than
   200 ms (OK flags read false — a wedged task can't publish stale data as
   healthy). All three sensors share one **`SensorLifecycle`** designed for
@@ -171,8 +178,8 @@ decisions. Keep it updated when the design evolves.
   (cocpitView hides the HUD elements; heading falls back to GPS course
   while moving); revival = 10 consecutive plausible reads (single garbage
   samples passing the checks used to blink the frozen HUD back on); a dead
-  sensor is probed at most every 2 s so its ~1 s failed transactions don't
-  starve the healthy ones. Plausibility checks: IMU |a| ≥ 0.05 g, baro
+  sensor is probed at most every 2 s (a leftover from the ~1 s failed
+  transactions of the IDF driver, harmless now). Plausibility checks: IMU |a| ≥ 0.05 g, baro
   300–1100 hPa, pitot 10–90 % count band. dt for gyro integration and the
   vario/pitot filters spans back to the last *good* sample (capped at the
   death threshold) — sub-threshold dropouts don't spike the vario or drop
@@ -180,9 +187,10 @@ decisions. Keep it updated when the design evolves.
   (gyro bias / baro reference / pitot zero) need ≥ half their window and
   retry once, else the sensor is `present = false` for the whole session
   (nothing can make it appear without a power loss). Bus-level rescue:
-  `clearI2cBus()` clocks a stuck slave free before `Wire.begin()` at boot
-  (an MCU reset mid-transaction leaves SDA held low across reboots), and
-  reruns in flight (`Wire.end()` → clear → `begin()`, every 5 s) when all
+  `clearI2cBus()` (→ `i2cbus::clear()`) clocks a stuck slave free at boot
+  (an MCU reset mid-transaction leaves SDA held low across reboots — seen
+  right after a flash, `I2C bus stuck (SDA low)`), and reruns in flight
+  (every 5 s) when all
   present sensors have been silent > 2 s. VFR_HUD/ALTITUDE are sent
   unconditionally — a dead baro hides only alt/vario on the HUD, never the
   airspeed.

@@ -1,7 +1,8 @@
 #include "ms4525do.h"
 
 #include <Arduino.h>
-#include <Wire.h>
+
+#include "i2cbus.h"
 
 namespace ms4525do {
 namespace {
@@ -24,13 +25,11 @@ constexpr uint8_t kDeviceAddress = 0x28;
 // since the last read - impossible to hit at our 50 Hz vs its 2 kHz),
 // 3 = fault. Anything non-fresh fails the read.
 bool readRaw(uint16_t &pressureCounts, uint16_t &temperatureCounts) {
-  if (Wire.requestFrom(kDeviceAddress, (uint8_t)4) != 4) {
+  uint8_t b[4];
+  if (i2cbus::read(kDeviceAddress, b, sizeof(b)) != i2cbus::Status::Ok) {
     return false;
   }
-  uint8_t b0 = Wire.read();
-  uint8_t b1 = Wire.read();
-  uint8_t b2 = Wire.read();
-  uint8_t b3 = Wire.read();
+  uint8_t b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3];
   if ((b0 >> 6) != 0) {
     return false;
   }
