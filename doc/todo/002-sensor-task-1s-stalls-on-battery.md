@@ -77,3 +77,10 @@ here. Not a hardware limit either (the ESP32 I2C timeout register tops out
 at ~13 ms). So the second comes from somewhere else in the Wire →
 esp32-hal-i2c → IDF driver → FSM reset path; not pursued, since the
 bit-banged bus makes the question moot.
+
+Reproduced on a bare devkit (`pio run -e i2ctest`, 2026-10-20): a *plain
+read* from an address nobody answers takes 1006.7-1007.0 ms and returns
+`ESP_ERR_TIMEOUT`; the same NACK in a register (write-then-read) read
+returns `ESP_FAIL` in 7-15 ms. The pitot is the only sensor read with a
+plain read - which is why only the pitot ever stalled. Details:
+`doc/plans/2026-10-20-arduino3-native-i2c.md`, phase 0.
