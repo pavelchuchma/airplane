@@ -109,6 +109,46 @@ air firmware must build with `-DCORE_DEBUG_LEVEL=0` (or silence the
   both times, so the ADC moved, not the pack - temperature. Original
   constants kept; the new ADC code reads like the old one.
 
+### Held SDA (2026-10-20, jumper GPIO21 → GPIO4 on the ground devkit)
+
+GPIO4 in open-drain pulls SDA low like a slave that lost track mid-byte;
+all builds with `CORE_DEBUG_LEVEL=0` (`i2ctest` / `i2ctest-core2`).
+
+```
+                                   2.0.17 / IDF 4.4    3.3.12 / IDF 5.5    i2cbus
+plain read, NACK                     1000.3 ms            0.27 ms          0.16 ms
+register read, NACK                     0.17 ms           0.19 ms          0.15 ms
+plain read, SDA held                   13.4 ms            0.47 ms          0.12 ms (bus-busy)
+plain read, released 30 ms in          13.5 ms            0.59 ms          0.12 ms
+plain read, after release            1000.3 ms            0.21 ms          0.15 ms
+```
+
+- 3.x fails a held bus fast and is back to normal on the very next
+  transaction after the release - nothing wedges.
+- 2.0.17's 1 s is the plain-read NACK path itself, with logging off too
+  (the 7-15 ms of its register reads in phase 0 were the log lines).
+- Not covered on the bench: short glitches inside a transaction with a
+  device that ACKs - only the airframe can provide those.
+
+### Held SCL (second jumper GPIO22 → GPIO5)
+
+Stretches start 50 µs into the address byte; Wire timeout 20 ms.
+
+```
+                                   2.0.17 / IDF 4.4    3.3.12 / IDF 5.5    i2cbus
+plain read, SCL held                 1000.1 ms           20.07 ms          0.01 ms (bus-busy)
+plain read, 1 ms stretch             1001.1 ms            1.20 ms          1.17 ms (waits it out)
+plain read, 5 ms stretch             1005.2 ms        2.2-5.2 ms          4.09 ms (stretch-timeout, bus freed)
+plain read, after                    1000.2 ms            0.21 ms          0.15 ms
+```
+
+- 3.x honours the caller's timeout: a held SCL costs exactly the 20 ms
+  `Wire.setTimeOut`, and the next transaction is normal again. A native
+  air driver should use a few-ms timeout, not 20.
+- (In this second run the SDA jumper had stopped holding - the bit-bang
+  reference read a plain NACK instead of bus-busy - so the held-SDA numbers
+  above are from the first run.)
+
 ## Phase 2 — native I2C behind `i2cbus.h`
 
 - A second implementation of the `i2cbus.h` API on Wire (or directly on
