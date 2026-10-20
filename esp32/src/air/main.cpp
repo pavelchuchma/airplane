@@ -22,9 +22,8 @@
  * from cocpitView) arrive the same way in reverse; no command for
  * kFailsafeTimeoutMs raises the failsafe flag in telemetry — the only
  * failsafe action for now, there are no servos yet. Telemetry also carries
- * link stats: RSSI of the peer's frames (via a promiscuous-mode callback —
- * the IDF 4.4 ESP-NOW rx callback has no RSSI), command-loss and
- * telemetry-NACK percentages over 1 s windows.
+ * link stats: RSSI of the peer's frames, command-loss and telemetry-NACK
+ * percentages over 1 s windows.
  *
  * USB serial (115200 baud) carries only '#'-prefixed boot/status
  * diagnostics (diag.h) - the same lines also go over the radio as
@@ -59,7 +58,6 @@
 
 #include <Arduino.h>
 #include <esp_now.h>
-#include <esp_wifi.h>
 
 #include "battery.h"
 #include "bmp280.h"
@@ -320,15 +318,16 @@ uint8_t cmdLossPct = 100;
 uint8_t txFailPct = 0;
 uint32_t statsWindowStartMs = 0;
 
-void onCommandReceived(const uint8_t *mac, const uint8_t *data, int len) {
+void onCommandReceived(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   // ESP-NOW hands frames from ANY sender to this callback - the PMK/LMK
   // encryption only covers traffic with the registered peer. Without this
   // check a stray transmitter on the channel could keep refreshing
   // lastCmdMs (suppressing the failsafe) and, once servos exist, fly the
   // airplane.
-  if (memcmp(mac, peerMac, 6) != 0) {
+  if (memcmp(info->src_addr, peerMac, 6) != 0) {
     return;
   }
+  peerRssiDbm = (int8_t)info->rx_ctrl->rssi;
   if (len != (int)sizeof(CommandMessage) || data[0] != MSG_COMMAND) {
     return;
   }
@@ -348,7 +347,7 @@ void onCommandReceived(const uint8_t *mac, const uint8_t *data, int len) {
   portEXIT_CRITICAL(&linkMux);
 }
 
-void onTelemetrySent(const uint8_t *mac, esp_now_send_status_t status) {
+void onTelemetrySent(const esp_now_send_info_t *info, esp_now_send_status_t status) {
   portENTER_CRITICAL(&linkMux);
   if (status == ESP_NOW_SEND_SUCCESS) {
     telemSendOk++;
@@ -356,19 +355,6 @@ void onTelemetrySent(const uint8_t *mac, esp_now_send_status_t status) {
     telemSendFail++;
   }
   portEXIT_CRITICAL(&linkMux);
-}
-
-// The IDF 4.4 ESP-NOW rx callback carries no RSSI, so it is sniffed from a
-// promiscuous-mode callback instead: ESP-NOW frames are 802.11 action
-// frames (management type), the transmitter address sits at payload+10.
-void onPromiscuousRx(void *buf, wifi_promiscuous_pkt_type_t type) {
-  if (type != WIFI_PKT_MGMT) {
-    return;
-  }
-  auto *pkt = (wifi_promiscuous_pkt_t *)buf;
-  if (memcmp(pkt->payload + 10, peerMac, 6) == 0) {
-    peerRssiDbm = (int8_t)pkt->rx_ctrl.rssi;
-  }
 }
 
 // Recomputes the 1 s window stats feeding cmdLossPct/txFailPct.
@@ -1013,10 +999,6 @@ void setup() {
     linkOk = true;
     esp_now_register_recv_cb(onCommandReceived);
     esp_now_register_send_cb(onTelemetrySent);
-    esp_wifi_set_promiscuous(true);  // RSSI sniffing, see onPromiscuousRx
-    wifi_promiscuous_filter_t filter = {.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT};
-    esp_wifi_set_promiscuous_filter(&filter);
-    esp_wifi_set_promiscuous_rx_cb(onPromiscuousRx);
   }
   statsWindowStartMs = millis();
 

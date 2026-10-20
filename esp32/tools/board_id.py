@@ -33,14 +33,17 @@ def default_esptool_cmd():
 
 
 def read_mac(port, esptool_cmd=None):
-    """Read the factory MAC via the ROM bootloader; None if unreadable (e.g. port busy)."""
+    """Read the factory MAC via the ROM bootloader; (mac, None) or (None, reason)."""
     cmd = list(esptool_cmd or default_esptool_cmd()) + ["--port", port, "read_mac"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     except subprocess.TimeoutExpired:
-        return None
+        return None, "esptool timed out"
     match = re.search(r"^MAC:\s*([0-9a-fA-F:]{17})", result.stdout, re.MULTILINE)
-    return match.group(1).lower() if match else None
+    if match:
+        return match.group(1).lower(), None
+    lines = (result.stderr or result.stdout).strip().splitlines()
+    return None, lines[-1] if lines else f"esptool exit code {result.returncode}"
 
 
 def candidate_ports(location_hint=None):
@@ -60,10 +63,13 @@ def find_board(mac, location_hint=None, esptool_cmd=None):
     mac = mac.strip().lower()
     probed, unreadable = [], []
     for p in candidate_ports(location_hint):
-        got = read_mac(p.device, esptool_cmd)
+        got, reason = read_mac(p.device, esptool_cmd)
         if got == mac:
             return p.device
-        (probed if got else unreadable).append(p.device)
+        if got:
+            probed.append(p.device)
+        else:
+            unreadable.append(f"{p.device} ({reason})")
     raise LookupError(
         f"no board with MAC {mac} found; other boards: {', '.join(probed) or 'none'}; "
         f"unreadable (port busy?): {', '.join(unreadable) or 'none'}"

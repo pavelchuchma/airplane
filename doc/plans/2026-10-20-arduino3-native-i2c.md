@@ -1,6 +1,7 @@
 # Arduino-ESP32 3.x and back to a native I2C driver
 
-Status: **planned** 2026-10-20. Phase 0 done (below).
+Status: **phase 1 done** 2026-10-20 (pioarduino 55.03.312-1 = arduino-esp32
+3.3.12 / IDF 5.5.5); phase 2 not started.
 
 ## Why
 
@@ -57,6 +58,22 @@ MPU and BMP280 use register reads, whose glitches were cheap. The test
 needs no sensors and no disturbance, so it is the acceptance test for
 phase 2.
 
+### Result on 3.3.12 (same devkit, pioarduino 55.03.312-1, IDF v5.5.5)
+
+```
+                              with core logging         CORE_DEBUG_LEVEL=0
+Wire plain read (pitot)       15.30 / 16.64 / 21.99 ms   0.16 / 0.26 / 0.68 ms   (min / avg / max)
+Wire register read (MPU)      18.05 / 19.51 / 25.33 ms   0.16 / 0.19 / 0.30 ms
+Wire probe (empty write)       0.15 /  0.17 /  0.26 ms   0.15 / 0.17 / 0.23 ms
+i2cbus plain read              0.15 /  0.16 /  0.21 ms   0.15 / 0.16 / 0.21 ms
+```
+
+The native driver of 3.x passes: a NACK costs what it costs the bit-banged
+bus. The catch is the left column - every failure prints two `[E]` lines
+on UART0, ~9 ms of blocking at 115200 baud, battery or not. A native-I2C
+air firmware must build with `-DCORE_DEBUG_LEVEL=0` (or silence the
+`i2c`/hal log tags).
+
 ## Phase 1 — arduino-esp32 3.x, bit-banged bus unchanged
 
 - `platform =` pioarduino, pinned to an exact release; both environments.
@@ -69,6 +86,26 @@ phase 2.
 - GPS UART2: default pins changed in 3.x — pass GPIO16/17 explicitly.
 - Verify: link (LR, encryption, failsafe, loss, RSSI against the old
   values), battery calibration, all sensors on battery, `i2ctest`.
+
+### Phase 1 result (2026-10-20)
+
+- Code changes were exactly the predicted ones: the two ESP-NOW callback
+  signatures (RSSI now from `rx_ctrl`, promiscuous sniffer removed) and the
+  battery ADC (`adc_oneshot` + `adc_cali` line fitting). GPS already passed
+  its UART2 pins. Flash 61 % → 72 %.
+- Surprises: pioarduino turns core logging on by default (now
+  `-DCORE_DEBUG_LEVEL=0` in both envs); PlatformIO ≥ 6.2 runs pre-scripts
+  with the interpreter pio was installed into, which lacks esptool 5's
+  dependencies, so `select_port.py` now probes with `~/.platformio/penv`'s
+  Python (and `board_id.py` reports *why* a port was unreadable).
+- Verified: bench link (`225857`, 59 s: 0 % tx fail, 0.4 % command loss,
+  RSSI −47 dBm), outdoor battery session (`232229`, 100 s: GPS cold-start
+  fix at 70 s, 12 sats, hacc 0.85 m, home + baro locked, all sensors OK, 0 %
+  loss down to −95 dBm).
+- Battery vs DMM (`232951`): N1 3.897 vs 3.90 V, N2 7.756 vs 7.81 V, N3
+  11.619 vs 11.70 V - N2/N3 −0.69 % (on 2.0.17 they were within 0.16 %), so
+  the new calibration code shifts those two channels; `kCalScale` N2/N3
+  rescaled by 7.81/7.756.
 
 ## Phase 2 — native I2C behind `i2cbus.h`
 

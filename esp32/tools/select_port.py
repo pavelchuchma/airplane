@@ -24,13 +24,21 @@ def fail(msg):
     Exit(1)
 
 
+def esptool_python():
+    # pioarduino installs esptool's dependencies into PlatformIO's penv; at
+    # pre-script time $PYTHONEXE can still be the interpreter pio itself was
+    # installed into, which lacks them.
+    penv = os.path.join(env.subst("$PROJECT_CORE_DIR"), "penv", "bin", "python")
+    return penv if os.path.exists(penv) else env.subst("$PYTHONEXE")
+
+
 def resolve_port():
     mac = env.GetProjectOption("custom_board_mac", "").strip()
     if not mac:
         fail("custom_board_mac not set for this environment")
     hint = env.GetProjectOption("custom_usb_location", "").strip() or None
     esptool_cmd = [
-        env.subst("$PYTHONEXE"),
+        esptool_python(),
         os.path.join(env.PioPlatform().get_package_dir("tool-esptoolpy"), "esptool.py"),
     ]
     try:

@@ -21,8 +21,9 @@
 namespace battery {
 
 // Configures the ADC channels and loads the eFuse Vref characterization.
-// Cannot fail - the ADC is on-chip (presence of the *pack* is the caller's
-// boot probe: read() returning implausible cells means no balance lead).
+// Reports nothing - presence of the *pack* is the caller's boot probe:
+// read() returning implausible cells means no balance lead (or, should the
+// on-chip ADC fail to initialize, zeros that look the same).
 void begin();
 
 // Samples all three nodes (64 raw samples each, averaged), converts via the

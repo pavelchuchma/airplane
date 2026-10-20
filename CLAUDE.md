@@ -20,7 +20,13 @@ decisions. Keep it updated when the design evolves.
 
 ## Commands
 
-- Firmware build/upload: `cd esp32 && pio run -e air -t upload` (or `-e ground`)
+- Firmware build/upload: `cd esp32 && pio run -e air -t upload` (or `-e ground`).
+  The platform is **pioarduino** (arduino-esp32 3.x on ESP-IDF 5.5, pinned
+  in `platformio.ini`), which needs PlatformIO Core ≥ 6.2; both envs build
+  with `-DCORE_DEBUG_LEVEL=0` (an `[E]` log line blocks UART0 ~9 ms, and on
+  the ground board it would land in the binary frame stream).
+- I2C driver failure timing on a bare devkit: `pio run -e i2ctest -t upload`
+  (flashes the ground board; reflash `-e ground` afterwards).
 - USB power and the battery/BEC must never be live at the same time — but
   this is **enforced mechanically**: the two connectors physically cannot be
   plugged in at once. So it is never a precondition to check or ask about
@@ -83,9 +89,9 @@ decisions. Keep it updated when the design evolves.
   which stays the source. So a battery-only session no longer loses its
   diagnostics. `esp32/src/ground` is the protocol-agnostic bridge:
   ESP-NOW payloads ↔ COBS+CRC frames on USB serial at 460800 baud, binary
-  only, never prints. Air-side RSSI comes from a promiscuous-mode callback
-  (IDF 4.4 has no per-packet RSSI in the ESP-NOW rx callback; core 3.x
-  would change the callback signatures).
+  only, never prints. Air-side RSSI is `rx_ctrl->rssi` of the received
+  command (`esp_now_recv_info_t`, IDF 5; the promiscuous-mode sniffer that
+  IDF 4.4 needed is gone).
 - The sensor board is a GY-91, but its IMU is an
   MPU-6500 (verified via WHO_AM_I = 0x70 and no AK8963 at 0x0C) — a fake
   "MPU-9250", so there is **no magnetometer**. Yaw is gyro integration only:
@@ -307,7 +313,10 @@ decisions. Keep it updated when the design evolves.
   vs multimeter — channels read 2-2.7 % high on nominal ratios); a repeat on
   2026-08-29 confirmed it to 0.08-0.16 % per node but could not yield the
   offsets — both points sit at a full pack, ~1 % apart, so the two-point fit
-  is singular (node 3 came out slope 6.02, offset +996 mV). The pack is a
+  is singular (node 3 came out slope 6.02, offset +996 mV). The move to
+  IDF 5 `adc_oneshot` + `adc_cali` (2026-10-20) shifted N2/N3 by −0.69 %
+  against the DMM (N1 unchanged) — rescaled; re-check after any ADC library
+  change. The pack is a
   **3S1P Samsung INR18650-30Q** (unprotected cells, 15 A/cell continuous,
   `doc/parts/battery-samsung-30q.md`); land at 3.5 V/cell resting, never
   below 3.0. Full throttle costs **~0.3-0.36 V/cell** of indicated voltage

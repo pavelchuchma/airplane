@@ -37,10 +37,10 @@ uint8_t peerMac[6];
 framing::FrameDecoder decoder;
 
 // WiFi task context: queue only, drop when the loop can't keep up.
-void onEspNowReceive(const uint8_t *mac, const uint8_t *data, int len) {
+void onEspNowReceive(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   // ESP-NOW hands frames from ANY sender to this callback (encryption
   // only covers the registered peer) - forward only the air board's.
-  if (memcmp(mac, peerMac, 6) != 0) {
+  if (memcmp(info->src_addr, peerMac, 6) != 0) {
     return;
   }
   if (len <= 0 || len > (int)sizeof(Packet::data)) {

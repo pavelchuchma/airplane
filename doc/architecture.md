@@ -408,7 +408,6 @@ Reasoning behind the choices:
     `local.ini.example`, and reach both firmwares as `-DLINK_*_HEX` via
     `tools/link_keys.py` — air + ground only, the USB side is trusted). A key/channel mismatch fails silently: a dead link right
     after touching either means suspect the keys first;
-  - RSSI of the peer's frames is sniffed via a promiscuous-mode callback —
-    the Arduino core 2.x / IDF 4.4 ESP-NOW receive callback carries no RSSI
-    (that arrived with `esp_now_recv_info_t` in core 3.x; the callback
-    signatures change too if the platform is ever bumped).
+  - RSSI of the peer's frames comes from `esp_now_recv_info_t.rx_ctrl` in
+    the receive callback (arduino-esp32 3.x / IDF 5); on core 2.x / IDF 4.4
+    it had to be sniffed with a promiscuous-mode callback.
