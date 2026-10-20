@@ -14,9 +14,9 @@
  *   - Held SCL: a jumper from GPIO22 (SCL) to GPIO5 - held throughout, and
  *     clock stretches of 1 and 5 ms started inside the address byte.
  *
- * Each case runs through Wire (the driver under test) and through i2cbus
- * (the bit-banged reference); results go to USB serial (115200), repeated
- * every 10 s.
+ * Each case runs through Wire and, on IDF 5, through i2cbus (the air
+ * firmware's own wrapper of the IDF master driver); results go to USB
+ * serial (115200), repeated every 10 s.
  */
 
 #include <Arduino.h>
@@ -24,7 +24,9 @@
 #include <driver/gpio.h>
 #include <esp_timer.h>
 
+#if ESP_IDF_VERSION_MAJOR >= 5
 #include "../air/i2cbus.h"
+#endif
 
 namespace {
 
@@ -106,6 +108,21 @@ void report(const char *name, const Result &r) {
                 r.sumUs / 1000.0f / r.n, r.maxUs / 1000.0f, r.lastCode);
 }
 
+// Whether holding a jumper pin really pulls the bus line low.
+bool jumperWorks(void (*hold)(bool), gpio_num_t line) {
+  hold(true);
+  delayMicroseconds(20);
+  bool low = !gpio_get_level(line);
+  hold(false);
+  return low;
+}
+
+void reportJumpers() {
+  Serial.printf("jumpers: SDA (GPIO21<-GPIO4) %s, SCL (GPIO22<-GPIO5) %s\n",
+                jumperWorks(holdSda, GPIO_NUM_21) ? "pulling" : "NOT CONNECTED",
+                jumperWorks(holdScl, GPIO_NUM_22) ? "pulling" : "NOT CONNECTED");
+}
+
 // The held-SDA sequence for one driver: held, released mid-transaction,
 // recovered.
 template <typename F>
@@ -153,6 +170,7 @@ void sclCases(const char *driver, F op) {
 void runWire() {
   Wire.begin(21, 22, kClockHz);
   Wire.setTimeOut(kTimeoutMs);
+  reportJumpers();
   auto plainRead = [] { return (int)Wire.requestFrom(kAbsentAddress, (uint8_t)4); };
   report("Wire plain read (pitot)", timeIt(plainRead, kRepeats));
   report("Wire register read (MPU)", timeIt([] {
@@ -170,9 +188,11 @@ void runWire() {
   Wire.end();
 }
 
-void runBitBang() {
+#if ESP_IDF_VERSION_MAJOR >= 5
+void runI2cbus() {
   i2cbus::begin();
   i2cbus::clear();
+  reportJumpers();
   static uint8_t buf[14];
   // code = status * 10 + 1 when the transaction had to free the bus
   auto plainRead = [] { return (int)i2cbus::read(kAbsentAddress, buf, 4) * 10 + i2cbus::lastCleared(); };
@@ -181,6 +201,7 @@ void runBitBang() {
   heldCases("i2cbus plain read", plainRead);
   sclCases("i2cbus plain read", plainRead);
 }
+#endif
 
 }  // namespace
 
@@ -195,7 +216,9 @@ void loop() {
                 ESP_ARDUINO_VERSION_MAJOR, ESP_ARDUINO_VERSION_MINOR, ESP_ARDUINO_VERSION_PATCH,
                 esp_get_idf_version(), kTimeoutMs, (unsigned)kClockHz, kAbsentAddress);
   runWire();
-  runBitBang();
+#if ESP_IDF_VERSION_MAJOR >= 5
+  runI2cbus();
+#endif
   Serial.println("# i2ctest: done");
   delay(10000);
 }

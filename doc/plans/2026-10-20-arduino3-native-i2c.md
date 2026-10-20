@@ -1,7 +1,9 @@
 # Arduino-ESP32 3.x and back to a native I2C driver
 
-Status: **phase 1 done** 2026-10-20 (pioarduino 55.03.312-1 = arduino-esp32
-3.3.12 / IDF 5.5.5); phase 2 not started.
+Status: **phase 2 done** 2026-10-21 - native driver in the air firmware,
+bench- and battery-tested; the held-bus `i2ctest` cases through the
+wrapper are still to run (jumpers came loose). Phase 1 done 2026-10-20 (pioarduino 55.03.312-1 =
+arduino-esp32 3.3.12 / IDF 5.5.5).
 
 ## Why
 
@@ -149,7 +151,30 @@ plain read, after                    1000.2 ms            0.21 ms          0.15 
   reference read a plain NACK instead of bus-busy - so the held-SDA numbers
   above are from the first run.)
 
-## Phase 2 — native I2C behind `i2cbus.h`
+## Phase 2 — native I2C behind `i2cbus.h` (as built)
+
+The bit-banged implementation was deleted (it stays in history,
+`git show e65f783:esp32/src/air/i2cbus.cpp`); `i2cbus.h` keeps its API on
+top of `driver/i2c_master.h` directly - not Wire, which hides the error
+codes and adds its own lock and log lines:
+
+- one bus (port 0, GPIO21/22, glitch filter 7, internal pull-ups), device
+  handles created on first use per address, 100 kHz, 5 ms timeout;
+- before START: lines held → `i2c_master_bus_reset`; still held →
+  `bus-busy`, transaction skipped; after the transaction: a held line →
+  reset at once, `lastCleared()`;
+- statuses `ok` / `bus-busy` / `failed` / `timeout` (the clock-stretch
+  figure and the NACK/SDA-conflict split are gone with the bit-bang).
+
+Results so far: `i2ctest` NACK cases 0.15-0.29 ms through the wrapper;
+bench session `2026-10-21_000530` (60 s, USB, all sensors present): no
+freeze, no `I2C` report line, values as before. Battery session
+`2026-10-21_001143` (16 s of telemetry): the same, all four sensor flags
+up, 0 % loss. Longer battery sessions with the airframe closed will show
+whether in-transaction glitches behave - the one case the bench cannot make.
+
+### Original plan
+
 
 - A second implementation of the `i2cbus.h` API on Wire (or directly on
   `i2c_master`), selected at build time; the sensor drivers and

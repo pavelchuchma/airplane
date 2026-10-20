@@ -181,11 +181,12 @@ a 20 ms timeout), and with sensors read inline that collapsed the 50 Hz loop
 task's latest snapshot under a spinlock, so a bus pathology can only ever
 delay sensor data, never the link. The same driver behaviour later froze
 the whole snapshot for ~1 s on every glitched MS4525DO read (a cold ground
-joint, doc/todo/002), so the bus is now bit-banged (`src/air/i2cbus.cpp`):
-every wait is bounded, a slave holding SDA is freed right after the
-transaction, and each transaction says how it failed (NACK, clock stretch,
-SDA conflict, bus busy) — the driver could do none of that. That is what
-found the joint.
+joint, doc/todo/002). A bit-banged bus served in between - its
+per-transaction failure classes found the joint - and since the move to
+arduino-esp32 3.x the bus runs on the ESP-IDF 5 master driver
+(`src/air/i2cbus.cpp`): a 5 ms timeout per transaction, both lines checked
+around it and a slave holding SDA freed at once; a failed read costs well
+under a millisecond (measured on the bench with `i2ctest`).
 
 The ESP-NOW link is implemented: the air firmware sends one `TelemetryMessage`
 per sample (50 Hz) and receives `CommandMessage`s (lib/protocol/messages.h),

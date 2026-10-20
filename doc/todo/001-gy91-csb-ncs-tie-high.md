@@ -44,8 +44,8 @@ that no longer ACKs its address, so the fix is in the wiring.
 
 ## Verification
 
-The firmware prints `BMP280 no ACK - off the bus (CSB latched into SPI?
-...)` when the baro dies without answering its address, and an
+The firmware prints `BMP280 no answer - off the bus (CSB latched into
+SPI? ...)` when the baro dies without answering, and an
 `I2C BMP280 1s: ...` report for any bus trouble; since protocol v7 both
 reach `cocpitView/logs/<stem>.air.log` on battery too. After the change,
 run several battery sessions, handle the airframe (roll it over, lay it on

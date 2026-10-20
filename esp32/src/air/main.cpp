@@ -1,7 +1,7 @@
 /*
  * Air side: sensors, servos, autopilot.
  *
- * Reads the GY-91 sensor board over I2C (bit-banged, i2cbus.h):
+ * Reads the GY-91 sensor board over I2C (i2cbus.h):
  *   - accelerometer/gyroscope (MPU-6500 at 0x68; the board is sold as
  *     MPU-9250 but ours is a 6-axis clone without the AK8963 magnetometer).
  *     Roll/pitch come from a complementary filter; yaw is gyro-integration
@@ -32,9 +32,9 @@
  *
  * All I2C sensor access runs in a dedicated FreeRTOS task, so that no bus
  * trouble can ever touch the safety-critical 50 Hz link loop; loop() only
- * consumes the latest published sensor snapshot. The bus itself is
- * bit-banged (i2cbus.h) with bounded waits: the Arduino/IDF driver stalled
- * ~1 s per transaction regardless of Wire.setTimeOut.
+ * consumes the latest published sensor snapshot. Every bus transaction is
+ * bounded by a few-ms timeout (i2cbus.h); the arduino-esp32 2.x driver
+ * stalled ~1 s per failed read regardless of Wire.setTimeOut.
  *
  * The peer (ground board) MAC comes from -DPEER_MAC_STR, injected from
  * [env:ground] custom_board_mac by tools/peer_mac.py.
@@ -180,11 +180,8 @@ constexpr uint32_t kProbeIntervalMs = 2000;  // dead-sensor probe cadence
 constexpr uint32_t kBusRescueAfterUs = 2000000;  // nothing good on the bus this long -> rescue
 constexpr uint32_t kBusRescueIntervalMs = 5000;  // bus-rescue attempt cadence
 constexpr uint32_t kSnapshotStaleUs = 200000;  // loop() distrusts a snapshot older than this
-// A bit-banged data read takes 0.5-3 ms; WiFi preemption adds a little.
-constexpr uint32_t kSlowReadUs = 10000;
-// Measured stretches include WiFi interrupts preempting the wait (seen up to
-// ~0.5 ms on a clean bus), so only half the stretch timeout is news.
-constexpr uint32_t kBusReportStretchUs = 1000;
+// A data read takes 0.2-2 ms; the bus timeout (5 ms) caps a failed one.
+constexpr uint32_t kSlowReadUs = 4000;
 constexpr uint32_t kBusReportIntervalMs = 1000;
 constexpr float kAirDensity = 1.225f;  // [kg/m3] fixed sea-level rho - the result is IAS
 
@@ -393,20 +390,18 @@ void clearI2cBus() {
 
 // Per-sensor record of how its data reads went, reported once a second
 // only when something happened - the trail that tells a misbehaving sensor
-// (NACKs, clock stretching, SDA conflicts) from a clean bus.
+// (failed reads, timeouts, a held bus) from a clean bus.
 struct BusStats {
   explicit BusStats(const char *name) : name(name) {}
 
   const char *name;
   uint16_t count[i2cbus::kStatusCount] = {};
-  uint32_t maxStretchUs = 0;
   uint32_t maxTookUs = 0;
   uint16_t cleared = 0;
 
   void note(uint32_t startUs) {
     count[(int)i2cbus::lastStatus()]++;
     cleared += i2cbus::lastCleared();
-    maxStretchUs = max(maxStretchUs, i2cbus::lastMaxStretchUs());
     maxTookUs = max(maxTookUs, (uint32_t)(micros() - startUs));
   }
 
@@ -415,7 +410,7 @@ struct BusStats {
     for (int i = 1; i < i2cbus::kStatusCount; i++) {
       errors = errors || count[i] > 0;
     }
-    if (errors || cleared || maxStretchUs >= kBusReportStretchUs || maxTookUs >= kSlowReadUs) {
+    if (errors || cleared || maxTookUs >= kSlowReadUs) {
       char text[96];
       int len = snprintf(text, sizeof(text), "%u ok", count[0]);
       for (int i = 1; i < i2cbus::kStatusCount && len < (int)sizeof(text); i++) {
@@ -424,8 +419,8 @@ struct BusStats {
                           i2cbus::statusName((i2cbus::Status)i));
         }
       }
-      diag::print("I2C %s 1s: %s, %u bus freed, max stretch %u us, max %.1f ms", name, text,
-                  cleared, (unsigned)maxStretchUs, maxTookUs / 1000.0f);
+      diag::print("I2C %s 1s: %s, %u bus freed, max %.1f ms", name, text, cleared,
+                  maxTookUs / 1000.0f);
     }
     *this = BusStats(name);
   }
@@ -585,17 +580,17 @@ bool calibrateGyroWhenStill() {
 }
 
 // One chip-id read at the moment of death separates the failure classes:
-// no ACK = the chip is off the bus (a low on CSB latches the BMP280 into
+// no answer = the chip is off the bus (a low on CSB latches the BMP280 into
 // SPI mode until power-on reset), an answer = it talks but its data failed
-// the plausibility check.
+// the plausibility check, a busy or timed-out bus = not the chip at all.
 void diagnoseBaroDeath() {
   uint8_t chipId = 0;
   bool acked = bmp280::readChipId(chipId);
   i2cbus::Status status = i2cbus::lastStatus();
   if (acked) {
     diag::print("BMP280 still answers (chip-id 0x%02X) - data implausible", chipId);
-  } else if (status == i2cbus::Status::AddrNack) {
-    diag::print("BMP280 no ACK - off the bus (CSB latched into SPI? only a power cycle revives)");
+  } else if (status == i2cbus::Status::Failed) {
+    diag::print("BMP280 no answer - off the bus (CSB latched into SPI? only a power cycle revives)");
   } else {
     diag::print("BMP280 chip-id probe failed: %s - the bus, not the chip", i2cbus::statusName(status));
   }

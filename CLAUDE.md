@@ -138,8 +138,10 @@ decisions. Keep it updated when the design evolves.
   airframe wiring that made the MS4525DO glitch on the bus whenever the
   airframe was closed on battery (resoldered 2026-10-20, 381 s clean
   since), and the second came from the Arduino/IDF I2C driver, which
-  turned each glitched read into a ~1 s wait — hence the bit-banged bus
-  (below), where a glitch costs one sample. How it was narrowed down
+  turned each glitched plain read into a ~1 s wait (arduino-esp32 2.x
+  only — fixed by the move to 3.x, below), where a glitch now costs one
+  sample. A bit-banged bus served in between (`git show e65f783`); its
+  per-transaction failure classes are what found the joint. How it was narrowed down
   (VTX, ADC, timing, open vs closed airframe), and why the 1 s is *not*
   the IDF alive interval: `doc/todo/002-sensor-task-1s-stalls-on-battery.md`.
   **Gyro bias calibration waits for stillness** (protocol v6,
@@ -161,18 +163,19 @@ decisions. Keep it updated when the design evolves.
   dedicated FreeRTOS task** (`sensorTask`, core 0) — the Arduino/IDF I2C
   driver stalled ~1 s per transaction on a disturbed bus regardless of
   `Wire.setTimeOut` (measured; where in the driver stack is unknown), which
-  used to collapse the 50 Hz link loop to ~0.5 Hz. Since 2026-10-20 the bus is **bit-banged** (`src/air/i2cbus.cpp`,
-  plan `doc/plans/2026-10-20-soft-i2c.md`, ~90 kHz, open-drain GPIO21/22
-  with internal pull-ups, Wire no longer used): every wait is bounded (2 ms
-  clock-stretch timeout, a data read takes 0.5–3 ms), and each transaction
-  reports `ok`/`bus-busy`/`addr-nack`/`data-nack`/`stretch-timeout`/
-  `sda-conflict` plus its longest stretch; after every transaction both
-  lines are checked and a slave left holding SDA is clocked free at once
-  (`N bus freed`). Per sensor these are summed and reported once a second
-  as an `I2C <sensor> 1s: ...` diag line *only* when something happened
-  (an error, a freed bus, a stretch ≥ 1 ms or a read ≥ 10 ms; measured
-  stretches include WiFi-interrupt preemption, up to ~0.5 ms on a clean
-  bus), so a clean bus leaves the `.air.log` silent; `loop()` (core 1)
+  used to collapse the 50 Hz link loop to ~0.5 Hz. The bus runs on the
+  **ESP-IDF 5 master driver** (`src/air/i2cbus.cpp` over
+  `driver/i2c_master.h`, not Wire; plan
+  `doc/plans/2026-10-20-arduino3-native-i2c.md`): 100 kHz, internal
+  pull-ups, a **5 ms timeout** per transaction (a held SCL costs exactly
+  that; a NACK or held SDA < 1 ms, measured with `i2ctest`). Both lines are
+  checked around every transaction: held before START → bus clear, still
+  held → `bus-busy` without trying; held after → `i2c_master_bus_reset`
+  at once (`N bus freed`). Statuses `ok`/`bus-busy`/`failed` (NACK or
+  other — IDF does not tell them apart)/`timeout`. Per sensor these are
+  summed and reported once a second as an `I2C <sensor> 1s: ...` diag
+  line *only* when something happened (an error, a freed bus or a read ≥
+  4 ms), so a clean bus leaves the `.air.log` silent; `loop()` (core 1)
   only copies a `SensorSnapshot` under a
   spinlock and never touches the bus, and distrusts a snapshot older than
   200 ms (OK flags read false — a wedged task can't publish stale data as
