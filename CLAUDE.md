@@ -45,7 +45,9 @@ decisions. Keep it updated when the design evolves.
   cocpitView before flashing — it holds the ground port.
 - Ground app: `cocpitView/run.sh`
 - Ground app tests: `cd cocpitView && .venv/bin/python -m unittest discover tests`
-- Flight log inspection: `cd cocpitView && .venv/bin/python -m cockpitview.flightlog info|csv|events|yawcal logs/<file>.cvlog`
+- Flight log inspection: `cd cocpitView && .venv/bin/python -m cockpitview.flightlog info|csv|events|diag|yawcal logs/<file>.cvlog`
+- Air-side diagnostics of a session: `cocpitView/logs/<timestamp>.air.log`
+  (plain text, readable directly or with `tail -f` while cocpitView runs).
 
 ## Rules
 
@@ -68,8 +70,18 @@ decisions. Keep it updated when the design evolves.
   without it, `cockpitview/localconf.py` reads the `[site]` default for
   `terrain_fetch`). No valid command for 500 ms → failsafe flag in
   telemetry + `# FAILSAFE` diagnostic (no servos yet, the flag is the whole
-  action). Air USB serial (115200) carries only `#` diagnostics now — the
-  CSV output is gone. `esp32/src/ground` is the protocol-agnostic bridge:
+  action). Air USB serial (115200) carries only `#` diagnostics, and since
+  protocol v7 the same lines also go over the radio (`src/air/diag.cpp`,
+  `diag::print()` replaces every `Serial.printf("# ...")`; plan
+  `doc/plans/2026-10-20-air-diag-log.md`): variable-length `LogMessage`
+  (`MSG_LOG`, seq + `time_boot_ms` + overflow counter), buffered 32 lines
+  deep, sent by `loop()` at most every 100 ms and only while commands
+  arrive (boot lines wait until cocpitView connects). cocpitView prints
+  them as `[air] ...` and writes `logs/<stem>.air.log` next to the `.cvlog`
+  (UTC, log position HH:MM:SS.s, air boot time, seq; boot markers and
+  lost-line reports); `flightlog diag` regenerates it from the `.cvlog`,
+  which stays the source. So a battery-only session no longer loses its
+  diagnostics. `esp32/src/ground` is the protocol-agnostic bridge:
   ESP-NOW payloads ↔ COBS+CRC frames on USB serial at 460800 baud, binary
   only, never prints. Air-side RSSI comes from a promiscuous-mode callback
   (IDF 4.4 has no per-packet RSSI in the ESP-NOW rx callback; core 3.x
@@ -111,7 +123,7 @@ decisions. Keep it updated when the design evolves.
   floating CSB pin on the GY-91 glitched low and latched the BMP280 into
   SPI mode (irreversible until power-on reset) — tie CSB/NCS to 3V3
   (`doc/todo/001-gy91-csb-ncs-tie-high.md`). Diagnostics added for the
-  next occurrence (USB `#` lines only): a chip-id probe at baro death
+  next occurrence (in the `.air.log` since v7): a chip-id probe at baro death
   (`no ACK` vs `still answers`) and `# slow I2C: <sensor> took N ms` for
   any transaction ≥ 500 ms.
   The ~1 s sensor-task stalls are a separate, open problem: across all
@@ -122,10 +134,13 @@ decisions. Keep it updated when the design evolves.
   motor (cells steady), not orientation, not the per-second config check.
   Each stall freezes the snapshot for exactly ~1.0 s, so `loop()` drops
   all OK flags for ~0.8 s (the HUD "stutter"). Which transaction stalls is
-  unknown; the `# slow I2C` diagnostic needs USB, so the discriminating
-  experiment is USB + balance lead only (no main lead): stalls → the
-  ADC/battery read path, none → BEC/wiring (floating CSB/NCS,
-  `doc/todo/001`).
+  unknown — since v7 the `slow I2C` lines (now also timing the battery ADC
+  read) reach the `.air.log` on battery too, so the next battery session
+  names it. The ADC hypothesis is tested by flashing with
+  `PLATFORMIO_BUILD_FLAGS=-DAIR_NO_BATTERY` (battery never read) and
+  counting stalls on battery: stalls stay → BEC/wiring (floating CSB/NCS,
+  `doc/todo/001`), vanish → the ADC path. Full per-boot table, hypotheses
+  and the experiment: `doc/todo/002-sensor-task-1s-stalls-on-battery.md`.
   **Gyro bias calibration waits for stillness** (protocol v6,
   `calibrateGyroWhenStill()`): a 1 s window with every axis within 3 °/s,
   |a| within 1 g ± 0.1 g, no read gap > 100 ms, |bias| ≤ 10 °/s; rejected

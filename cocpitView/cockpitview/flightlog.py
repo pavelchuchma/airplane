@@ -18,6 +18,7 @@ File format - a sequence of length-prefixed records:
                   readers decode by the header, not by the current
                   protocol.py, so old logs survive PROTOCOL_VERSION bumps.
     0x01 DOWN     raw downlink payload as delivered by the bridge
+                  (TelemetryMessage and the air's diagnostic LogMessage)
     0x02 UP       raw uplink payload as sent
     0x03 EVENT    JSON {"ev": name, ...} - PC-side state that cannot be
                   recomputed from the wire: home_locked, baro_calibrated,
@@ -42,10 +43,17 @@ Reading: read() / header() / telemetry_frames() / commands() / events()
 and to_dataframe() (pandas is an optional analysis dependency, not in
 requirements.txt). CLI:
 
-    python -m cockpitview.flightlog info|csv|events|yawcal FILE.cvlog
+    python -m cockpitview.flightlog info|csv|events|diag|yawcal FILE.cvlog
 
 `yawcal` replays the log through the GPS heading calibration (yawcal.py) -
 that is where its two field-measured constants get their numbers.
+
+The air board's diagnostic lines (LogMessage, the '#' lines of its USB
+serial) are also written as text to `<stem>.air.log` next to the `.cvlog`,
+flushed per line so it can be followed with `tail -f`. The text comes from
+AirLogFormatter fed with exactly the records the `.cvlog` gets, so `diag`
+regenerates the same text from any log - the `.air.log` is a derived view,
+the `.cvlog` stays the source.
 """
 
 import collections
@@ -99,6 +107,7 @@ class FlightLog:
         self._queue = queue.SimpleQueue()
         self._closed = False
         self.path = None  # set by the writer once the file exists
+        self.air_log_path = None  # set by the writer with the first air diagnostic line
         self.bytes_written = 0
         self._thread = None
         if self._dir is not None:
@@ -134,6 +143,8 @@ class FlightLog:
 
     def _run(self):
         f = None
+        air = None
+        formatter = None
         buf = bytearray()
         pending_events = []
         next_flush = time.monotonic() + FLUSH_PERIOD_S
@@ -149,7 +160,7 @@ class FlightLog:
                     t, rtype, payload, name = item
                     if f is None:
                         if rtype == TYPE_DOWN:
-                            f = self._open(t, buf)
+                            f, formatter = self._open(t, buf)
                             for pending in pending_events:
                                 buf += pack_record(*pending[:3])
                         elif rtype == TYPE_EVENT and name.startswith(PRE_OPEN_EVENT_PREFIX):
@@ -158,6 +169,12 @@ class FlightLog:
                         else:
                             continue
                     buf += pack_record(t, rtype, payload)
+                    lines = formatter.feed(t, rtype, payload)
+                    if lines:
+                        if air is None:
+                            air = self._open_air_log()
+                        air.write("".join(line + "\n" for line in lines))
+                        air.flush()
                 now = time.monotonic()
                 if f is not None and buf and (now >= next_flush or len(buf) >= FLUSH_BYTES):
                     self._write(f, buf)
@@ -166,14 +183,17 @@ class FlightLog:
             if f is not None:
                 self._write(f, buf)
                 f.close()
+            if air is not None:
+                air.close()
         except OSError as err:
             print(f"flight log disabled: {err}")
             self._closed = True  # producers stop queueing; the queue is garbage
-            if f is not None:
-                try:
-                    f.close()
-                except OSError:
-                    pass
+            for handle in (f, air):
+                if handle is not None:
+                    try:
+                        handle.close()
+                    except OSError:
+                        pass
 
     def _open(self, t_mono0, buf):
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -184,12 +204,20 @@ class FlightLog:
             n += 1
             path = self._dir / f"{stamp}-{n}.cvlog"
         f = open(path, "wb")
-        header = json.dumps(build_header(t_mono0, self._args), default=str).encode()
-        buf += pack_record(t_mono0, TYPE_HEADER, header)
+        hdr = build_header(t_mono0, self._args)
+        buf += pack_record(t_mono0, TYPE_HEADER, json.dumps(hdr, default=str).encode())
         self._write(f, buf)  # a crash in the first second still leaves a readable file
         self.path = path
         print(f"Logging to {path}")
-        return f
+        # through JSON, so the formatter sees what a reader of the file will
+        return f, AirLogFormatter(json.loads(json.dumps(hdr, default=str)))
+
+    def _open_air_log(self):
+        path = air_log_path(self.path)
+        air = open(path, "w", encoding="utf-8")
+        self.air_log_path = path
+        print(f"Air diagnostics to {path}")
+        return air
 
     def _write(self, f, buf):
         f.write(buf)
@@ -208,6 +236,8 @@ def build_header(t_mono0, args):
         "telemetry_flags": flags,
         "command_struct": protocol._COMMAND.format,
         "command_fields": list(protocol.Command._fields),
+        "log_struct": protocol._LOG_HEADER.format,
+        "log_fields": [name for name in protocol.LogLine._fields if name != "text"],
         "started_utc": utc_now(),
         "t_mono0": t_mono0,
         **git_state(),
@@ -338,6 +368,95 @@ def events(path):
             yield t, json.loads(payload)
 
 
+def air_log_path(cvlog_path):
+    """`2026-10-20_153000.cvlog` -> `2026-10-20_153000.air.log`."""
+    return pathlib.Path(cvlog_path).with_suffix(".air.log")
+
+
+def _parse_utc(text):
+    return datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+def format_log_time(seconds):
+    """Position in the log as HH:MM:SS.s - the HUD's replay clock, accepted
+    by --replay-start."""
+    hours, rest = divmod(max(0.0, seconds), 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{int(hours):02d}:{int(minutes):02d}:{secs:04.1f}"
+
+
+class AirLogFormatter:
+    """Turns the records of a log, in file order, into `.air.log` text lines.
+
+    Fed every record (feed() returns the lines it produced, usually none):
+    DOWN LogMessages become lines, link_window events re-anchor the UTC
+    column (monotonic time stops while macOS sleeps; before the first
+    heartbeat the header's started_utc is the anchor). seq restarting with a
+    smaller time_boot_ms marks an air reboot, a seq gap is reported as lost
+    lines - split by the air's `dropped` counter into buffer overflow and
+    radio loss - and a repeated seq is a duplicate and skipped."""
+
+    def __init__(self, hdr):
+        self._t0 = hdr["t_mono0"]
+        self._anchor = (self._t0, _parse_utc(hdr["started_utc"]))
+        self._version = hdr["protocol_version"]
+        self._struct = struct.Struct(hdr["log_struct"]) if "log_struct" in hdr else None
+        self._fields = hdr.get("log_fields")
+        self._last = None  # previous LogLine of the current boot
+        self.lines = 0  # air lines formatted (not counting the marker lines)
+
+    def feed(self, t, rtype, payload):
+        if rtype == TYPE_EVENT:
+            ev = json.loads(payload)
+            if ev.get("ev") == "link_window" and "utc" in ev:
+                self._anchor = (t, _parse_utc(ev["utc"]))
+            return []
+        if rtype != TYPE_DOWN or self._struct is None or len(payload) < 2:
+            return []
+        if payload[0] != protocol.MSG_LOG or payload[1] != self._version:
+            return []
+        line = protocol.decode_log(payload, self._struct, self._fields)
+        if line is None:
+            return []
+
+        prefix = self._prefix(t)
+        out = []
+        last = self._last
+        if last is not None and line.seq == last.seq and line.time_boot_ms == last.time_boot_ms:
+            return []  # duplicate delivery
+        if last is None or line.time_boot_ms < last.time_boot_ms:
+            if line.seq == 0:
+                out.append(f"{prefix}--- air boot ---")
+            else:
+                out.append(f"{prefix}--- air boot already running, joined at #{line.seq} ---")
+            missing, overflow = line.seq, line.dropped
+            if last is None:
+                missing = overflow = 0  # earlier lines may have gone to another session
+        else:
+            missing = (line.seq - last.seq - 1) & 0xFFFF
+            overflow = (line.dropped - last.dropped) & 0xFFFF
+        if missing:
+            overflow = min(overflow, missing)
+            out.append(f"{prefix}[lost {missing} lines ({overflow} buffer overflow on air, {missing - overflow} radio)]")
+        out.append(f"{prefix}boot {line.time_boot_ms / 1000.0:9.3f}  #{line.seq:<5d} {line.text}")
+        self._last = line
+        self.lines += 1
+        return out
+
+    def _prefix(self, t):
+        anchor_t, anchor_utc = self._anchor
+        utc = anchor_utc + datetime.timedelta(seconds=t - anchor_t)
+        stamp = utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        return f"{stamp}  {format_log_time(t - self._t0)}  "
+
+
+def air_log_lines(path):
+    """Yields the `.air.log` lines of a log - what the writer produced live."""
+    formatter = AirLogFormatter(header(path))
+    for t, rtype, payload in read(path):
+        yield from formatter.feed(t, rtype, payload)
+
+
 def flag_columns(hdr, flags):
     """{'gps_fix': bool, ...} from a flags byte and the header's flag map."""
     return {name.lower(): bool(flags & bit) for name, bit in hdr["telemetry_flags"].items()}
@@ -383,10 +502,12 @@ def _info(path):
     reboots = 0
     prev_t = prev_boot_ms = None
     event_names = collections.Counter()
+    air_log = AirLogFormatter(hdr)
     heartbeats = []  # t of link_window events, to tell "link down" from "PC dead"
 
     for t, rtype, payload in read(path):
         counts[rtype] += 1
+        air_log.feed(t, rtype, payload)
         first = t if first is None else first
         last = t
         if rtype == TYPE_DOWN:
@@ -413,6 +534,8 @@ def _info(path):
         gaps.append((prev_t, last))  # the plane went silent before the app was closed
     print(f"  duration {duration:.1f} s, {sum(counts.values())} records:", ", ".join(f"{TYPE_NAMES.get(k, k)} {v}" for k, v in sorted(counts.items())))
     print(f"  telemetry frames {frames}" + (f", air reboots {reboots}" if reboots else ""))
+    if air_log.lines:
+        print(f"  air diagnostic lines {air_log.lines} (`diag` prints them)")
     for version, n in sorted(telemetry.skipped.items()):
         print(f"  {n} telemetry frames v{version} skipped (header is v{hdr['protocol_version']})")
     for version, n in sorted(cmds.skipped.items()):
@@ -443,6 +566,11 @@ def _events(path):
     for t, ev in events(path):
         rest = {k: v for k, v in ev.items() if k != "ev"}
         print(f"{t - t0:9.3f}  {ev['ev']:<16} {json.dumps(rest)}")
+
+
+def _diag(path):
+    for line in air_log_lines(path):
+        print(line)
 
 
 def _yawcal(path):
@@ -496,7 +624,7 @@ def _yawcal(path):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)  # `... csv FILE | head` exits quietly
-    commands_ = {"info": _info, "csv": _csv, "events": _events, "yawcal": _yawcal}
+    commands_ = {"info": _info, "csv": _csv, "events": _events, "diag": _diag, "yawcal": _yawcal}
     if len(argv) != 2 or argv[0] not in commands_:
         print(f"usage: python -m cockpitview.flightlog {'|'.join(commands_)} FILE.cvlog", file=sys.stderr)
         return 2

@@ -14,6 +14,9 @@ baud, see protocol.py):
     joystick yet); the fixed rate is the air side's link-loss detector, so
     the sender runs whenever the port is open. Each sent payload goes to the
     FlightLog too.
+  - down: LogMessage, the air board's diagnostic lines. Printed to the
+    console as `[air] ...`; the FlightLog writes them to `<stem>.air.log`
+    next to the `.cvlog`.
 
 By default the serial port is resolved by the ground board's factory MAC
 address (the boards' clone CP2102s share one USB serial number, so port
@@ -159,6 +162,11 @@ class EspNowSource:
 
             for payload in splitter.feed(data):
                 self._log.downlink(payload)  # before any filter: log what arrived
+                if payload[0] == protocol.MSG_LOG and payload[1:2] == bytes((protocol.PROTOCOL_VERSION,)):
+                    line = protocol.decode_log(payload)
+                    if line is not None:
+                        print(f"[air] {line.text}")
+                    continue
                 if payload[0] != protocol.MSG_TELEMETRY:
                     continue
                 if payload[1] != protocol.PROTOCOL_VERSION:

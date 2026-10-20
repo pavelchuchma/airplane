@@ -27,7 +27,9 @@
  * telemetry-NACK percentages over 1 s windows.
  *
  * USB serial (115200 baud) carries only '#'-prefixed boot/status
- * diagnostics — the CSV telemetry output is gone.
+ * diagnostics (diag.h) - the same lines also go over the radio as
+ * LogMessage, at most every kLogSendIntervalMs and only while commands
+ * arrive, and end up in cocpitView's .air.log.
  *
  * All I2C sensor access runs in a dedicated FreeRTOS task: the Arduino
  * I2C stack can stall ~1 s per transaction when a device drops off the
@@ -63,6 +65,7 @@
 
 #include "battery.h"
 #include "bmp280.h"
+#include "diag.h"
 #include "espnow_link.h"
 #include "gps.h"
 #include "messages.h"
@@ -249,14 +252,14 @@ struct SensorLifecycle {
       if (++goodStreak >= kRecoveryStreak) {
         ok = true;
         goodStreak = 0;
-        Serial.printf("# %s recovered\n", name);
+        diag::print("%s recovered", name);
       }
       return false;
     }
     goodStreak = 0;
     if (ok && nowUs - lastGoodUs >= deadAfterUs) {
       ok = false;
-      Serial.printf("# %s stopped responding - data nan until it recovers\n", name);
+      diag::print("%s stopped responding - data nan until it recovers", name);
     }
     if (!ok) {
       nextProbeMs = nowMs + kProbeIntervalMs;
@@ -303,6 +306,8 @@ SensorSnapshot sensorShared;
 
 constexpr uint32_t kFailsafeTimeoutMs = 500;  // 25 consecutive lost command frames
 constexpr uint32_t kStatsWindowMs = 1000;
+// Diagnostic lines yield to telemetry: <= 10 lines/s, a few % of airtime.
+constexpr uint32_t kLogSendIntervalMs = 100;
 constexpr uint32_t kExpectedCmdPerWindow = 50;  // command rate is fixed 50 Hz
 
 uint8_t peerMac[6];
@@ -406,7 +411,7 @@ void clearI2cBus() {
   if (digitalRead(kPinSda) == HIGH) {
     return;  // bus is free
   }
-  Serial.println("# I2C bus stuck (SDA low) - clocking it free");
+  diag::print("I2C bus stuck (SDA low) - clocking it free");
   pinMode(kPinScl, OUTPUT_OPEN_DRAIN);
   digitalWrite(kPinScl, HIGH);
   for (int i = 0; i < 9 && digitalRead(kPinSda) == LOW; i++) {
@@ -422,7 +427,7 @@ void clearI2cBus() {
   digitalWrite(kPinSda, HIGH);
   delayMicroseconds(5);
   if (digitalRead(kPinSda) == LOW) {
-    Serial.println("# I2C bus clear failed - check wiring/power");
+    diag::print("I2C bus clear failed - check wiring/power");
   }
 }
 
@@ -462,7 +467,7 @@ void mpuCheckConfig() {
   for (const MpuRegister &r : kMpuConfig) {
     uint8_t value;
     if (mpuReadRegister(r.reg, value) && (value & r.mask) != r.value) {
-      Serial.printf("# IMU config lost (reg 0x%02X reads 0x%02X) - rewriting\n", r.reg, value);
+      diag::print("IMU config lost (reg 0x%02X reads 0x%02X) - rewriting", r.reg, value);
       mpuWriteConfig();
       return;
     }
@@ -530,7 +535,7 @@ void publishCalibrating(const int16_t gyro[3], uint32_t nowUs) {
 // kGyroStillMaxGapUs restarts the window, since the rotation inside the
 // gap is invisible to the range gate.
 bool calibrateGyroWhenStill() {
-  Serial.println("# gyro calibration: waiting for the airframe to be still");
+  diag::print("gyro calibration: waiting for the airframe to be still");
   TickType_t lastWake = xTaskGetTickCount();
   uint32_t startUs = micros();
   uint32_t lastReadUs = startUs;
@@ -588,8 +593,8 @@ bool calibrateGyroWhenStill() {
       gyroBiasX = bias[0];
       gyroBiasY = bias[1];
       gyroBiasZ = bias[2];
-      Serial.printf("# gyro bias %.2f %.2f %.2f deg/s after %.1f s\n", bias[0] * 180.0f / PI,
-                    bias[1] * 180.0f / PI, bias[2] * 180.0f / PI, (now - startUs) / 1e6f);
+      diag::print("gyro bias %.2f %.2f %.2f deg/s after %.1f s", bias[0] * 180.0f / PI,
+                  bias[1] * 180.0f / PI, bias[2] * 180.0f / PI, (now - startUs) / 1e6f);
       return true;
     }
     count = 0;  // window rejected - start a fresh one
@@ -600,7 +605,7 @@ bool calibrateGyroWhenStill() {
 void reportSlow(const char *what, uint32_t startUs) {
   uint32_t tookUs = micros() - startUs;
   if (tookUs >= kSlowTransactionUs) {
-    Serial.printf("# slow I2C: %s took %u ms\n", what, (unsigned)(tookUs / 1000));
+    diag::print("slow I2C: %s took %u ms", what, (unsigned)(tookUs / 1000));
   }
 }
 
@@ -614,9 +619,9 @@ void diagnoseBaroDeath() {
   bool acked = bmp280::readChipId(chipId);
   reportSlow("BMP280 chip-id probe", startUs);
   if (acked) {
-    Serial.printf("# BMP280 still answers (chip-id 0x%02X) - data implausible\n", chipId);
+    diag::print("BMP280 still answers (chip-id 0x%02X) - data implausible", chipId);
   } else {
-    Serial.println("# BMP280 no ACK - off the bus (CSB latched into SPI? only a power cycle revives)");
+    diag::print("BMP280 no ACK - off the bus (CSB latched into SPI? only a power cycle revives)");
   }
 }
 
@@ -763,7 +768,9 @@ void updateBattery(uint32_t nowUs, uint32_t nowMs) {
   lastAttemptUs = nowUs;
 
   uint16_t mv[3];
+  uint32_t startUs = micros();
   battery::read(mv);
+  reportSlow("battery ADC read", startUs);
   bool good = true;
   for (uint16_t v : mv) {
     good = good && v >= kCellMinMv && v <= kCellMaxMv;
@@ -862,7 +869,7 @@ void tryBusRescue(uint32_t nowUs, uint32_t nowMs) {
     return;
   }
   nextRescueMs = nowMs + kBusRescueIntervalMs;
-  Serial.println("# whole I2C bus dead - re-clocking it free");
+  diag::print("whole I2C bus dead - re-clocking it free");
   Wire.end();
   clearI2cBus();
   Wire.begin();
@@ -883,13 +890,16 @@ void sensorTask(void *) {
 
   // Presence is decided once, here: the sensors never lose power in
   // flight, so one absent now cannot appear later - and probing an absent
-  // device costs ~1 s per failed transaction, forever. '#' lines are
-  // ignored by the cocpitView parser.
+  // device costs ~1 s per failed transaction, forever.
   imuLc.present = probeImu();
   baroLc.present = probeBaro();
   pitotLc.present = probePitot();
+#ifdef AIR_NO_BATTERY
+  diag::print("battery reading disabled by the AIR_NO_BATTERY build flag");
+#else
   battery::begin();
   battLc.present = probeBattery();
+#endif
 
   // Boot calibrations, one retry each: a transient bus glitch during the
   // window must not cost the whole flight's data. A sensor whose
@@ -913,7 +923,7 @@ void sensorTask(void *) {
       lc->ok = true;
       lc->lastGoodUs = bootUs;
     } else {
-      Serial.printf("# %s absent - data nan for this flight\n", lc->name);
+      diag::print("%s absent - data nan for this flight", lc->name);
     }
   }
 
@@ -1013,10 +1023,9 @@ void setup() {
   // Radio first: the command receiver and stats windows start counting
   // while the blocking sensor calibrations below (~2 s) run.
   if (!espnowlink::parseMac(PEER_MAC_STR, peerMac)) {
-    Serial.println("# bad PEER_MAC_STR - ESP-NOW disabled");
+    diag::print("bad PEER_MAC_STR - ESP-NOW disabled");
   } else if (!espnowlink::begin(peerMac)) {
-    Serial.print("# ESP-NOW init failed: ");
-    Serial.println(espnowlink::lastError());
+    diag::print("ESP-NOW init failed: %s", espnowlink::lastError());
   } else {
     linkOk = true;
     esp_now_register_recv_cb(onCommandReceived);
@@ -1060,7 +1069,7 @@ void loop() {
   if (!gpsChecked && now > 5000000) {
     gpsChecked = true;
     if (!gps::alive()) {
-      Serial.println("# GPS not responding on UART2 - GPS fields will be nan");
+      diag::print("GPS not responding on UART2 - GPS fields will be nan");
     }
   }
 
@@ -1082,8 +1091,7 @@ void loop() {
   if (failsafe != wasFailsafe) {
     wasFailsafe = failsafe;
     // No servos yet - the flag (+ this diagnostic) is the whole action.
-    Serial.println(failsafe ? "# FAILSAFE entered - command link lost"
-                            : "# FAILSAFE cleared");
+    diag::print(failsafe ? "FAILSAFE entered - command link lost" : "FAILSAFE cleared");
   }
 
   SensorSnapshot s;
@@ -1139,4 +1147,17 @@ void loop() {
   memcpy(t.cellMv, s.cellMv, sizeof(t.cellMv));
 
   esp_now_send(peerMac, (const uint8_t *)&t, sizeof(t));
+
+  // Commands arriving = cocpitView is listening; until then (boot, link
+  // loss) the lines wait in the diag buffer.
+  static uint32_t lastLogSendMs = 0;
+  if (!failsafe && nowMs - lastLogSendMs >= kLogSendIntervalMs) {
+    uint8_t msg[sizeof(LogMessageHeader) + LOG_TEXT_MAX];
+    uint16_t seq;
+    size_t len = diag::peek(msg, seq);
+    if (len > 0 && esp_now_send(peerMac, msg, len) == ESP_OK) {
+      diag::commit(seq);
+      lastLogSendMs = nowMs;
+    }
+  }
 }

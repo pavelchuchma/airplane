@@ -6,13 +6,14 @@
 
 #include <stdint.h>
 
-constexpr uint8_t PROTOCOL_VERSION = 6;
+constexpr uint8_t PROTOCOL_VERSION = 7;
 
 // Both radios must sit on the same channel; set explicitly at bring-up.
 constexpr uint8_t WIFI_CHANNEL = 1;
 
 constexpr uint8_t MSG_TELEMETRY = 0x01;
 constexpr uint8_t MSG_COMMAND = 0x02;
+constexpr uint8_t MSG_LOG = 0x03;
 
 // TelemetryMessage.flags
 constexpr uint8_t TELEM_FLAG_GPS_FIX = 1 << 0;           // lat1e7/lon1e7 valid
@@ -53,7 +54,7 @@ struct __attribute__((packed)) TelemetryMessage {
   float hdop, hAccM, vAccM;            // NAN = unknown (hAcc/vAcc = 1-sigma [m])
   int8_t rssiDbm;                      // RSSI of last command frame seen at air, 0 = none yet
   uint8_t cmdLossPct;                  // % of expected command frames missed, last 1 s window
-  uint8_t txFailPct;                   // % of telemetry esp_now_send without ACK, last 1 s
+  uint8_t txFailPct;                   // % of esp_now_send (telemetry + log) without ACK, last 1 s
   uint8_t lastCmdVersion;              // version byte of the last received command, 0 = none
   uint16_t cellMv[3];                  // per-cell voltage [mV], valid iff TELEM_FLAG_BATT_OK
 };
@@ -73,6 +74,21 @@ struct __attribute__((packed)) CommandMessage {
 };
 static_assert(sizeof(CommandMessage) == 20, "wire format changed - bump PROTOCOL_VERSION");
 
+constexpr uint8_t LOG_TEXT_MAX = 120;
+
+// Air -> PC, one diagnostic line (the '#' lines of the air USB serial), sent
+// only while commands arrive and at most every 100 ms. Variable length: the
+// header is followed by 1..LOG_TEXT_MAX bytes of text, no NUL, no newline.
+struct __attribute__((packed)) LogMessageHeader {
+  uint8_t msgId;        // MSG_LOG
+  uint8_t version;      // PROTOCOL_VERSION
+  uint16_t seq;         // per boot from 0, assigned when the line is produced
+  uint32_t timeBootMs;  // when the line was produced, not when it was sent
+  uint16_t dropped;     // lines lost to air-side buffer overflow since boot
+};
+static_assert(sizeof(LogMessageHeader) == 10, "wire format changed - bump PROTOCOL_VERSION");
+
 // ESP-NOW payload limit
-static_assert(sizeof(TelemetryMessage) <= 250 && sizeof(CommandMessage) <= 250,
+static_assert(sizeof(TelemetryMessage) <= 250 && sizeof(CommandMessage) <= 250 &&
+                  sizeof(LogMessageHeader) + LOG_TEXT_MAX <= 250,
               "message exceeds the 250 B ESP-NOW payload limit");

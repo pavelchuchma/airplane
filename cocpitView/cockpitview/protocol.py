@@ -28,10 +28,11 @@ Two invariants the flight log (flightlog.py) relies on:
 import collections
 import struct
 
-PROTOCOL_VERSION = 6
+PROTOCOL_VERSION = 7
 
 MSG_TELEMETRY = 0x01
 MSG_COMMAND = 0x02
+MSG_LOG = 0x03
 
 # TelemetryMessage.flags
 TELEM_FLAG_GPS_FIX = 1 << 0
@@ -52,6 +53,11 @@ _COMMAND = struct.Struct("<BBBB8h")
 assert _TELEMETRY.size == 90, "telemetry layout drifted from messages.h"
 assert _COMMAND.size == 20, "command layout drifted from messages.h"
 
+# LogMessage: this header + 0..LOG_TEXT_MAX bytes of text (no NUL, no newline)
+_LOG_HEADER = struct.Struct("<BBHIH")
+LOG_TEXT_MAX = 120
+assert _LOG_HEADER.size == 10, "log header layout drifted from messages.h"
+
 Telemetry = collections.namedtuple(
     "Telemetry",
     "msg_id version flags sats time_boot_ms "
@@ -65,6 +71,8 @@ Telemetry = collections.namedtuple(
 Command = collections.namedtuple(
     "Command", "msg_id version flags seq " + " ".join(f"ch{i}" for i in range(COMMAND_CHANNELS))
 )
+
+LogLine = collections.namedtuple("LogLine", "msg_id version seq time_boot_ms dropped text")
 
 TELEMETRY_SIZE = _TELEMETRY.size
 
@@ -81,6 +89,24 @@ def decode_command(payload):
     if len(payload) != _COMMAND.size or payload[0] != MSG_COMMAND:
         return None
     return Command._make(_COMMAND.unpack(payload))
+
+
+def decode_log(payload, header_struct=_LOG_HEADER, fields=LogLine._fields):
+    """Unpacks a MSG_LOG payload, or returns None when it isn't one. The
+    layout parameters let flightlog decode by a log file's stored header."""
+    if len(payload) < header_struct.size or payload[0] != MSG_LOG:
+        return None
+    if len(payload) - header_struct.size > LOG_TEXT_MAX:
+        return None
+    values = dict(zip(fields, header_struct.unpack_from(payload)))
+    values["text"] = payload[header_struct.size :].decode("utf-8", errors="replace")
+    return LogLine(**{name: values.get(name) for name in LogLine._fields})
+
+
+def encode_log(seq, time_boot_ms, text, dropped=0):
+    """Builds a MSG_LOG payload the way the air side does (diag.cpp) - for tests."""
+    data = text.encode()[:LOG_TEXT_MAX]
+    return _LOG_HEADER.pack(MSG_LOG, PROTOCOL_VERSION, seq & 0xFFFF, time_boot_ms, dropped & 0xFFFF) + data
 
 
 def encode_command(seq, channels=NEUTRAL_CHANNELS, flags=0):

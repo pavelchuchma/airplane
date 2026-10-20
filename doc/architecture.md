@@ -49,6 +49,12 @@ Data flows:
   liveness heartbeat, serial open/loss) into `cocpitView/logs/*.cvlog`
   (`cockpitview/flightlog.py`). The PC is the logging point because it
   already sees everything; there is no on-air storage.
+- **Air diagnostics (down):** the air board's `#` lines (sensor death,
+  slow I2C transactions, failsafe transitions...) travel as `LogMessage`
+  next to the telemetry, rate-limited so they never crowd it, and land as
+  text in `cocpitView/logs/<stem>.air.log` beside the `.cvlog` — USB and
+  the flight battery are never connected together, so the radio is the
+  only way to see what the air side reported in flight.
 - **Replay:** `--replay FILE.cvlog` plays the recorded downlink payloads
   back through the same publisher the live link uses
   (`cockpitview/replay_source.py` → `publisher.py`), so an old flight is
@@ -240,7 +246,7 @@ bumps — readers decode by the header, not by the current `protocol.py`.
 Producers only queue bytes; a writer thread owns all file I/O, opens the file
 on the first telemetry frame and flushes once per second (a crash loses
 ≤ 1 s, a truncated tail is dropped on read). Post-flight use:
-`python -m cockpitview.flightlog info|csv|events FILE`, or
+`python -m cockpitview.flightlog info|csv|events|diag FILE`, or
 `flightlog.to_dataframe()` with pandas — this is where the pitot position
 error (GPS vs. IAS on reciprocal legs) and the second battery calibration
 point will come from.
