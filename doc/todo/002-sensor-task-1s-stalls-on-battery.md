@@ -11,10 +11,15 @@ Status: **resolved** 2026-10-20. Opened 2026-10-12.
   glitched pitot read into a ~1 s wait (1006-1008 ms, regardless of
   `Wire.setTimeOut(20)`), which froze the whole sensor snapshot. Where in
   the driver stack that second comes from is not known (see below). Fixed
-  independently of the joint: the bus is now bit-banged
-  (`src/air/i2cbus.cpp`, `doc/plans/2026-10-20-soft-i2c.md`) with bounded
-  waits, and a slave holding SDA is freed right after the transaction, so a
-  glitch costs one sample.
+  independently of the joint, twice: first by a bit-banged bus
+  (`git show e65f783`, `doc/plans/2026-10-20-soft-i2c.md` - its failure
+  classes are what found the joint), then by the move to arduino-esp32 3.x,
+  whose native IDF 5 driver fails the same NACK in 0.26 ms instead of
+  1007 ms (`pio run -e i2ctest`, `doc/plans/2026-10-20-arduino3-native-i2c.md`).
+  A slave holding SDA is freed right after the transaction, so a glitch
+  costs one sample. Glitches inside a transaction with a real sensor could
+  not be reproduced on the bench; that is left to operation - the
+  `I2C <sensor> 1s:` lines in the `.air.log` will show it.
 
 The rest of this file is the investigation, kept because the method is
 reusable.

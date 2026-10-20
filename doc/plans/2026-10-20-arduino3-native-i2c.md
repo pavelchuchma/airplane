@@ -1,8 +1,9 @@
 # Arduino-ESP32 3.x and back to a native I2C driver
 
-Status: **phase 2 done** 2026-10-21 - native driver in the air firmware,
-bench- and battery-tested; the held-bus `i2ctest` cases through the
-wrapper are still to run (jumpers came loose). Phase 1 done 2026-10-20 (pioarduino 55.03.312-1 =
+Status: **done** 2026-10-21 - native driver in the air firmware, bench- and
+battery-tested. Not run, by decision: the held-bus `i2ctest` cases through
+the wrapper (the jumpers came loose; Wire on the same driver passed them)
+and in-transaction glitches with a real sensor - left to operation. Phase 1 done 2026-10-20 (pioarduino 55.03.312-1 =
 arduino-esp32 3.3.12 / IDF 5.5.5).
 
 ## Why
