@@ -345,6 +345,19 @@ Reasoning behind the choices:
   lower rail shows the opposite signature — battery current roughly
   independent of voltage (constant current = linear regulator behind the
   input).
+- **Only the pack connector is ever hot-plugged.** Direct pack feed has one
+  cost: the VTX's input buck (Richtek RT8258/RT8259 class) is rated 24 V
+  with a 26 V absolute maximum and the board has no TVS. Plugging the VTX
+  onto an already live pack — a stiff node, thanks to the logic buck's
+  charged input capacitors — rings its input toward 2 × V_in, and from a
+  full 3S pack that is 24–25 V. One VTX died exactly this way
+  (2026-10-20); the preceding year it had always been wired first and the
+  pack plugged last, which puts the logic buck's electrolytic on the same
+  node and damps the edge. So: every load stays on the distribution board,
+  the pack is the single connection point, nothing is connected or
+  disconnected under power. A separately pluggable load needs its own
+  damper (220 µF electrolytic + SMBJ15A TVS at its input). Details and the
+  repair options in `parts/fpv-58g-uvc-kit.md` §8.
 - **Sensors do not hang on the devkit's 3.3 V pin.** The devkit's AMS1117 is
   marginal (clone quality, ~1.1 V dropout) and the ESP32's 50 Hz ESP-NOW LR
   bursts pull 300–500 mA spikes through it; a separate low-dropout LDO

@@ -78,6 +78,8 @@ Pack: **3S1P [Samsung INR18650-30Q](battery-samsung-30q.md)**, 12.6 V full / ~11
 - UVC FPV receiver is ground-side (powered by the phone) — nothing needed onboard.
 - VTX + camera are a **constant-power load** (internal switching regulators) — measured 312 mA @ 12 V direct vs 350 mA through a Mini-360 at 7.5 V, i.e. a step-down converter only adds its own loss and heat. Power them straight from the pack; VTX heatsink heat is RF PA dissipation and needs airflow, not a lower voltage. Details in `architecture.md` (Power architecture).
 - Full-throttle motor showed no video interference with direct pack feed (bench test). If noise bands ever appear after airframe installation, the fix is an LC filter (~100 µH + 470 µF) in front of the VTX — not a converter.
+- **The pack connector is the only hot-plug point.** The VTX's input buck is rated 24 V with a 26 V absolute maximum and no TVS; plugging it onto a live pack rings the input toward 2 × V_in and killed one (2026-10-20, `fpv-58g-uvc-kit.md` §8). Everything stays wired to the distribution board, only the pack gets plugged.
+- The camera is powered from the VTX's camera header (5–12 V, ~70 mA), not from the pack directly.
 
 ### Battery monitoring
 
