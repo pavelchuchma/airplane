@@ -17,7 +17,7 @@
 | Android | OTG plug-and-play; apps: **Go FPV**, UVC FPV, RotG (DVR recording, VR split-screen) |
 | PC | works as a normal UVC webcam (VLC, OBS) |
 | iOS | **not supported** |
-| Antenna | RP-SMA female, ~5 dBi whip included |
+| Antenna | **RP-SMA** jack (same as the VTX — the two whips are interchangeable), ~5 dBi whip included |
 | Button | short press = next channel; **long press = auto-search** (locks strongest signal) |
 
 ## 2. Video transmitter (TS5823-family, 200 mW variant)
@@ -29,9 +29,9 @@
 | Supply | **DC 7–24 V** (2S–4S LiPo direct; 3S recommended) — NOT the 5 V whoop type. The 24 V is the input buck's own rating with no margin (abs. max 26 V, see §8) |
 | Current | seller sheet at 12 V: **150 mA @ 200 mW, 230 mA @ 600 mW** — measured with camera: see §5 |
 | Video in | CVBS 0.8–1.2 Vp-p / 75 Ω, PAL & NTSC transparent |
-| Antenna | RP-SMA female, ~2 dBi whip |
+| Antenna | **RP-SMA** jack (outer thread, centre *pin*) with a ~2 dBi whip (RP-SMA plug: knurled nut, centre *socket*). A true SMA jack (centre socket) threads onto this whip but makes no centre contact — a replacement VTX with an "MMCX–SMA" pigtail needs an MMCX–RP-SMA pigtail or an SMA antenna |
 | Channel select | one push-button + a single 7-segment digit showing band letter / channel number (table below) |
-| Connector | 6-pin JST pigtail — pinout not traced yet (pack in, camera power out, video in, audio by convention) |
+| Connector | 6-pin JST pigtail, order as printed on the shield: **Power in, GND, Video in, Audio in, GND, DC5V out** — the camera runs from the VTX's own 5 V buck, not from the pack |
 | Size/weight | 30×20×8 mm without the antenna mount, 5 g (seller sheet) |
 
 ![TS5823Pro_V10 board](img/fpv-58g-vtx-board.jpg)
@@ -81,9 +81,9 @@ VTX camera header (6-pin ribbon) → camera VCC + GND + video-in
 VTX antenna: RP-SMA whip — ALWAYS attach before power-up
 ```
 
-The camera hangs on the VTX's camera header, so it shares whatever rail the
-VTX gives it there (pack pass-through or the internal buck output — not yet
-traced; it saw the pack voltage when the buck failed, see §8).
+The camera hangs on the VTX's `DC5V out` pin, i.e. on the output of the
+VTX's internal buck (shield label). That is also why it saw the pack
+voltage when that buck's switch shorted (§8).
 
 **One connection point only.** The VTX stays permanently wired to the
 distribution board and the pack connector is the only thing that gets
@@ -117,9 +117,21 @@ Ground side: receiver dongle → OTG cable → Android phone (Go FPV app), or US
 
 ## 6. Latency
 
-- Pure analog chain (camera → VTX → RX): < 40 ms
-- UVC digitization + USB + Android rendering adds ~50–100 ms → **~100 ms glass-to-glass** total
+- Pure analog chain (camera → VTX → RX): < 40 ms. The VTX is plain FM
+  modulation with no frame buffer, so swapping it cannot move this number.
+- UVC digitization + USB + Android rendering adds ~50–100 ms → **~100 ms
+  glass-to-glass** (seen with the TS5823)
 - Fine for line-of-sight/camera-plane use; not for proximity/racing flying
+- **Measured with the ULTRA 1600: 0.20 s glass-to-glass** (2026-10-25,
+  viewer = cocpitView on the PC; FPV camera pointed at a phone running a
+  stopwatch, phone held next to the monitor, both photographed in one frame).
+  The earlier ~100 ms was measured the same way but possibly with a different
+  viewer app, so the two numbers may not be comparable. The VTX itself cannot
+  be the cause (plain FM, no frame buffer, CVBS has no resolution to choose);
+  the only signal-side change is the live audio subcarrier from the ULTRA
+  1600's built-in microphone, which a viewer might buffer against for A/V
+  sync. **Parked** — 200 ms is fine for line-of-sight flying; if it ever
+  matters, first remeasure with audio disabled in the viewer.
 
 ## 7. Legal note (CZ/EU)
 
@@ -172,10 +184,53 @@ buck, MCU, RF) survived is unknown until tested.
    would share digital supply and ground.
 3. New module, protected by the single-connection-point rule above.
 
+## 9. Replacement VTX — ULTRA 1600 (chosen 2026-10-21, Rotorama)
+
+Chosen over a second TS5823 after the §8 failure. Verified against the
+seller page and the manufacturer's manual (`ULTRA1600`, scanned PDF, linked
+in Sources). **Arrived and works on the bench (2026-10-25)**; the only
+surprise is the video latency, see §6.
+
+| Parameter | ULTRA 1600 | TS5823 (for comparison) |
+|---|---|---|
+| Supply | **7–36 V** (2–8S) — 2 × V_in of a full 3S pack is 25 V, well inside | 7–24 V, 26 V abs. max |
+| Power levels | Pit / **25** / 200 / 400 / 800 / 1600 mW (board print; the shop page omits 200) | 200 or 600 mW |
+| Bands | A, B, E, FatShark, Raceband + Boscam D, Low Race, Boscam X (4990–5621 MHz, **outside the receiver's 5645–5945 MHz** — do not use) | A/B/E/F/R |
+| Camera supply | **5 V / 0.6 A BEC** on the connector, "just for a camera / cooling fan" — never feed the pack into it | DC5V out |
+| Control | one button + 3 LEDs (channel blue, band green, power red; hold 2 s to enter, short press to step), plus **IRC Tramp** on the `IRC` pin (single-wire UART — the ESP32 could switch pit/25 mW on the ground later) | button + 7-seg |
+| Antenna | **MMCX** on board; shop pigtail is MMCX–SMA, so a **TrueRC MMCX→RP-SMA 90° 10 cm** pigtail goes in the order instead to keep RP-SMA everywhere | RP-SMA |
+| Size / weight | 36.5 × 36.5 × 12 mm, 30.5 mm holes, 15 g, aluminium heatsink, thermal protection | 30 × 20 × 8 mm, 5 g |
+| Connector | 6-pin JST: **DC, GND, GND, +5V, IRC, VIDEO** (board print); loose lead included | 6-pin JST |
+| Current | not published — measure alone (no camera) at 25 and 200 mW once installed | 150 / 230 mA @ 12 V |
+
+Wiring: camera `VCC` → `+5V`, `GND` → `GND`, video → `VIDEO`, spliced from
+the camera's JST↔Dupont lead. The single-connection-point rule (§4) still
+applies, the margin is just much larger.
+
+**Antennas:** 2 × FlyfishRC Osprey 150 mm **RP-SMA LHCP** (2.8 dBi,
+5.6–6 GHz, VSWR < 1.2, 11.3 g, RG141 semi-rigid stalk, polycarbonate cap).
+Both ends circular with the same sense — a CP antenna on one side only costs
+3 dB against a linear whip. Mounting on the airframe: stalk along the belly,
+element 45° back/down behind the trailing edge, ≥ 5 cm from battery, ESC
+leads and the carbon wing tube (EPP itself is transparent at 5.8 GHz); as
+far from the ESP32 antenna and the GPS as the fuselage allows, then check
+`LNK` and the satellite count against a session without the VTX. The RP-SMA
+bulkhead needs a small plywood/plastic plate glued into the EPP. Overhead
+null: both antennas have a minimum along their axis, so a plane straight
+above sits in both — tilting either antenna 30–45° moves it; at ≤ 200 m
+overhead the 1/r² gain covers it anyway. The old whips stay as spares (all
+RP-SMA). The FlyfishRC Osprey Stubby (23 mm, 4.2 g, 5.6–5.9 GHz) is the
+fallback if the 150 mm proves too exposed on landings.
+
+Legal: 25 mW is the only EU-legal step (§7), and EIRP counts the antenna
+gain — with 2.8 dBi the 25 mW step is ~48 mW EIRP, so strictly still over.
+
 ## Sources
 
 - [Eachine ROTG01 receiver](https://www.eachine.com/Eachine-ROTG01-UVC-OTG-5.8G-150CH-Full-Channel-FPV-Receiver-For-Android-Mobile-Phone-Smartphone-p-843.html)
 - [USB OTG FPV receivers overview (BrushlessWhoop)](https://brushlesswhoop.com/usb-otg-fpv-receivers/)
 - [TS5823 200 mW VTX review (Oscar Liang)](https://oscarliang.com/ts5823-200mw-video-transmitter/)
 - [Foxtech TS5828 spec](https://dev.foxtechfpv.com/58g-600mw-48channel-vtx.html)
+- [Rotorama — ULTRA 25-1600mW 4.9-5.8G](https://www.rotorama.cz/product/ultra-4-9g-5-8g-1600mw) and its [manual](https://www.rotorama.cz/assets/docs/a7592742784194b3b7ad265245b01827/27274-1/1600.pdf)
+- [Rotorama — FlyfishRC Osprey 150 mm RHCP/LHCP](https://www.rotorama.cz/product/osprey-150mm-rhcp-lhcp?variant=880)
 - [VTX power limits by country](https://blog.uavmodel.com/vtx-power-limits-by-country-fcc-ce-and-international-fpv-compliance-2026-guide/)
