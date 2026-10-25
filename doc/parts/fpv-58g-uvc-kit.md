@@ -225,6 +225,40 @@ fallback if the 150 mm proves too exposed on landings.
 Legal: 25 mW is the only EU-legal step (§7), and EIRP counts the antenna
 gain — with 2.8 dBi the 25 mW step is ~48 mW EIRP, so strictly still over.
 
+### IRC Tramp control line (measured and wired 2026-10-25; firmware: `doc/todo/003`)
+
+The `IRC` pin is a single-wire half-duplex UART (9600 8N1, 16-byte frames:
+`0x0F`, command, payload, checksum, `0x00`; commands `r`/`v`/`s` query
+range/status/temperature, `F`/`P`/`I` set frequency/power/pit mode, the VTX
+answers on the same wire). Measured on the pack-powered module: **3.59 V
+idle, 0.31 V under a 1 kΩ load to GND → input with a ~10 kΩ pull-up to a
+3.6 V rail**, so the VTX logic is 3.6 V, not 5 V. 3.59 V sits at the ESP32's
+absolute-maximum input (VDD + 0.3 V), hence the series resistor on RX.
+
+```
+VTX JST pin IRC ──┬──[ 10 kΩ ]── ESP32 GPIO26  (UART1 RX)
+                  │
+                  └──[ 1 kΩ ]─── ESP32 GPIO27  (UART1 TX)
+GND is common via the pack; no extra wire needed
+```
+
+- The 1 kΩ in the TX leg makes the shared line collision-safe: a VTX low
+  against an idle-high ESP32 TX sinks ~3 mA instead of shorting two
+  outputs, and an ESP32 low pulls the line to ~0.3 V against the 10 kΩ
+  pull-up. Keep TX ≤ 1 kΩ for that reason. The 10 kΩ in the RX leg limits
+  any clamp-diode current to microamps; at 9600 baud the RC is negligible.
+- GPIO26/27 are free (21/22 I2C, 16/17 GPS, 34/35/39 battery ADC, 1/3 USB
+  console); UART1 must be remapped off the flash pins anyway:
+  `Serial1.begin(9600, SERIAL_8N1, 26, 27)`.
+- Firmware must discard its own 16-byte echo on RX before reading the reply.
+- On USB-only bench power the ESP32 TX feeds ~3 mA through the 1 kΩ into
+  the unpowered VTX pin — harmless, which is the other job of that resistor.
+- A signal wire does not touch the single-connection-point rule (§4): the
+  VTX stays permanently wired, only the pack connector is ever plugged.
+- Payoff: pit / 25 mW on the ground and power or channel changes from
+  cocpitView over the command link, plus VTX temperature in telemetry
+  (the module has thermal protection — this would show how close it runs).
+
 ## Sources
 
 - [Eachine ROTG01 receiver](https://www.eachine.com/Eachine-ROTG01-UVC-OTG-5.8G-150CH-Full-Channel-FPV-Receiver-For-Android-Mobile-Phone-Smartphone-p-843.html)

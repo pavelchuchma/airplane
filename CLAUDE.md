@@ -418,7 +418,11 @@ decisions. Keep it updated when the design evolves.
   the bogus fit fell outside of while still inside `K_BOUNDS`. Still
   provisional: `GPS_VELOCITY_LAG_S` and the drift PSD need a longer flight
   (one window measures neither), and `k` wants reciprocal legs.
-- Next steps: second battery calibration point (after the first real flight,
+- Next steps: VTX control over IRC Tramp (`doc/todo/003-vtx-tramp-control.md`,
+  plan `doc/plans/2026-10-25-vtx-tramp-control.md`; the ULTRA 1600's `IRC`
+  pin is already wired to GPIO26/27, protocol v8 adds desired VTX
+  freq/power to commands and readback + temperature to telemetry);
+  second battery calibration point (after the first real flight,
   on the discharged pack); joystick input in
   cocpitView (the command channels are already on the wire, neutral for
   now); servos + a real failsafe action on the air side; fly the yaw
