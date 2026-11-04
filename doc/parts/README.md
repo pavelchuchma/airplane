@@ -38,10 +38,10 @@ GPIO21, every SCL pin to GPIO22. No address conflicts (0x28 / 0x68 / 0x76 /
 
 | Device | Interface | Device pin → ESP32 pin | Address(es) | Power |
 |---|---|---|---|---|
-| MS4525DO | I2C | SDA → GPIO21, SCL → GPIO22 | 0x28 | 5 V → VCC |
-| GY-91 | I2C | SDA → GPIO21, SCL → GPIO22; NCS, CSB, SDO/SAO unconnected | 0x68 (MPU) + 0x76 (BMP280); 0x0C (mag, after bypass) | 5 V → VIN |
+| MS4525DO | I2C | SDA → GPIO21, SCL → GPIO22 | 0x28 | sensor rail → VCC (4.65 V, see below) |
+| GY-91 | I2C | SDA → GPIO21, SCL → GPIO22; NCS, CSB, SDO/SAO unconnected | 0x68 (MPU) + 0x76 (BMP280); 0x0C (mag, after bypass) | sensor rail → VIN (onboard LDO) |
 | PCA9685 | I2C | SDA → GPIO21, SCL → GPIO22 | 0x40 | 5 V → VCC (servo rail V+ separate — see below) |
-| GPS — **currently wired in** | UART2 | TX → GPIO16 (RX2), RX → GPIO17 (TX2); PPS, EN unconnected | — | 5 V → VCC (onboard LDO; TX/RX stay 3.3 V logic) |
+| GPS — **currently wired in** | UART2 | TX → GPIO16 (RX2), RX → GPIO17 (TX2); PPS, EN unconnected | — | sensor rail → VCC (onboard LDO; TX/RX stay 3.3 V logic) |
 
 Common ground for everything.
 
@@ -54,11 +54,14 @@ Pack: **3S1P [Samsung INR18650-30Q](battery-samsung-30q.md)**, 12.6 V full / ~11
 ```
 3S Li-ion (9–12.6 V)
  │
- ├── BUCK A — PSM module (e.g. iFlight BLITZ PSM BXN, 2–8S in, 5V/2A + 12V/3A out)
- │     ├─ 5 V/2 A  → ESP32 (VIN pin), MS4525DO, GY-91, MPU-6050, GPS, PCA9685 VCC
- │     │             (electronics peak ~0.6 A → plenty of headroom)
- │     (PSM 12 V rail unused — VTX + camera go direct from the pack; measured:
- │      any converter in front of them *raises* battery draw, see below)
+ ├── BUCK A — LaskaKit mini SMD step-down, 5 V fixed (LA122016B, MP1584
+ │   │         clone, 1.8 A, 6–26 V in) — **puts out 5.3 V**, not adjustable
+ │   ├─ 5.3 V → ESP32 (5V/VIN pin; the onboard AMS1117 is happy up to 15 V)
+ │   └─ 1N4004 in series → sensor rail **4.65 V** under its ~50 mA load
+ │        → MS4525DO VCC, GY-91 VIN, GPS VCC (later: PCA9685 VCC)
+ │          (electronics peak ~0.6 A → plenty of headroom)
+ │   (VTX + camera go direct from the pack; measured: any converter in
+ │    front of them *raises* battery draw, see below)
  │
  └── BUCK B — servo UBEC 5–6 V / ≥5 A (e.g. Hobbywing/Matek 5A class)
        └─ PCA9685 V+ screw terminal (+ 470–1000 µF electrolytic on V+/GND)
@@ -68,11 +71,33 @@ Pack: **3S1P [Samsung INR18650-30Q](battery-samsung-30q.md)**, 12.6 V full / ~11
 
 | Branch | Load | Peak current | Converter |
 |---|---|---|---|
-| Electronics 5 V | ESP32 + all sensors + PCA9685 logic | ~0.6 A | PSM 5 V/2 A |
+| Electronics 5 V | ESP32 + all sensors + PCA9685 logic | ~0.6 A | LaskaKit 5 V / 1.8 A (5.3 V actual) |
 | Video | VTX 200 mW + camera | 312 mA @ 12 V (measured) | direct from pack |
 | Servos | PCA9685 V+ | **~1 A per loaded 9g servo**, more at stall (4 servos → budget 4–5 A) | dedicated UBEC ≥5 A |
 
 - **Servos must have their own converter** — a servo stall transient on a shared rail brown-outs the ESP32.
+- **The logic buck delivers 5.3 V and that is what the ESP32 gets.** It is a
+  fixed-output module (measured under load, 2026-11-04), fine for everything
+  with an LDO behind the pin — but the MS4525DO sits on the rail directly and
+  its absolute maximum is 5.5 V: 0.2 V of margin is less than a cheap buck's
+  load-step overshoot. Hence the **series diode on the common sensor supply
+  wire**: a 1N4004 for now, 0.65 V at the ~50 mA the three sensors draw
+  (GPS ~40, GY-91 ~5, pitot ~3.5), giving 4.65 V. Each device's limit:
+
+  | Device | Supply path | Limit | At 5.3 V | At 4.65 V |
+  |---|---|---|---|---|
+  | MS4525DO | chip VDD directly, 5.0 V nominal | abs. max 5.5 V | legal, no margin | 7 % under nominal, zero recalibrated at every boot |
+  | GY-91 | onboard 3.3 V LDO, spec VIN 3–5 V | LDO input ~6 V | fine | 1.3 V above dropout |
+  | GPS Quescan | onboard 3.3 V LDO, spec 3.3–5.0 V | LDO input ~6 V | above the seller's spec, fine | fine |
+  | ESP32 devkit 5V pin | AMS1117-3.3 | 15 V in | fine (more headroom) | — (not behind the diode) |
+  | PCA9685 (future) | VCC 2.3–5.5 V | 5.5 V | fine, planned on 3V3 anyway | fine |
+
+  **To do: swap the 1N4004 for a Schottky (1N5819 / BAT85)** — ~0.35 V at
+  50 mA gives ~4.95 V, i.e. the pitot's nominal. Same place, band toward the
+  sensors. Do not put the ESP32 behind the diode (its radio bursts would
+  modulate the drop) and do not put more loads on it than the sensors.
+  A 5.1 V Zener (1N5231B) is the wrong part here: it needs a series resistor
+  and sits well below 5.1 V at these currents.
 - **Never feed pack voltage (11 V) into ESP32 VIN** — the onboard AMS1117 would dissipate >1 W and thermally shut down. Always go through a 5 V buck first.
 - Common ground for all branches, star topology from the pack.
 - UVC FPV receiver is ground-side (powered by the phone) — nothing needed onboard.
@@ -103,5 +128,5 @@ measurement needs, and for the ~0.3 V/cell full-throttle sag that makes the
 
 ### Shopping list (not yet ordered)
 
-- 1× iFlight BLITZ PSM BXN 2–8S, 5V/2A + 12V/3A ([AliExpress 1005006108885165](https://www.aliexpress.com/item/1005006108885165.html))
+- 1× Schottky diode 1N5819 or BAT85 — replaces the 1N4004 on the sensor rail (see above)
 - 1× servo UBEC 5–6 V / 5 A (2–6S input)

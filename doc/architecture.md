@@ -294,10 +294,12 @@ otherwise fires with roughly a quarter of the pack remaining.
 3S Li-ion (9.0–12.6 V)
  ├─ ESC (RAY G2 R-20B, 20 A) ─► motor
  │    └─ linear BEC 5 V ──────► servos (PCA9685 V+)
- ├─ buck → 5 V ► logic:                                   (Mini-360)
- │    ├─ ESP32 devkit VIN (on-board AMS1117 feeds the ESP32 only)
- │    ├─ MS4525DO (5 V part; RC filter 10–22 Ω + 100 µF)
- │    └─ LDO 3.3 V (HT7833/ME6211) ► GY-91, GPS
+ ├─ buck → 5.3 V ► logic:        (LaskaKit mini SMD step-down, 5 V fixed)
+ │    ├─ ESP32 devkit 5V pin (on-board AMS1117 feeds the ESP32 only)
+ │    └─ series diode (1N4004 → 4.65 V; Schottky planned → ~4.95 V)
+ │         ├─ MS4525DO (5 V part, on the rail directly)
+ │         ├─ GY-91  (onboard 3.3 V LDO)
+ │         └─ GPS    (onboard 3.3 V LDO)
  └─────────────────► FPV camera + VTX  (direct from pack — measured, see below)
 ```
 
@@ -360,19 +362,22 @@ Reasoning behind the choices:
   repair options in `parts/fpv-58g-uvc-kit.md` §8.
 - **Sensors do not hang on the devkit's 3.3 V pin.** The devkit's AMS1117 is
   marginal (clone quality, ~1.1 V dropout) and the ESP32's 50 Hz ESP-NOW LR
-  bursts pull 300–500 mA spikes through it; a separate low-dropout LDO
-  (HT7833, ~0.3 V dropout) keeps the sensor rail clean — it rides through 5 V
-  rail dips and keeps radio spikes out of the baro/vario data.
-- **The "Mini-360" modules are MP2307, not MP1584** — verified 340 kHz
-  switching (MP1584 runs 500 kHz–1.5 MHz). Both chips ship under the same
-  module name and the specs get quoted interchangeably, so check the marking
-  on what actually arrives. With the video buck dropped, only the logic 5 V
-  rail uses one. (The MP2307 being *synchronous* — one predictable ripple
-  frequency instead of light-load pulse-skipping — mattered for the video
-  filter design; it's irrelevant on the logic rail.) Real-world continuous
-  limit is ~1–1.5 A despite the "3 A" print. Set the trimmer under no load,
-  verify with a meter before connecting anything, and lock it with a drop of
-  varnish — vibration can turn it.
+  bursts pull 300–500 mA spikes through it, which a GPS front end would see
+  as supply noise. The GY-91 and the GPS run from their own onboard LDOs
+  off the 5 V rail instead, where those LDOs have >1 V of headroom to
+  filter with.
+- **The logic buck is a fixed 5 V module that really puts out 5.3 V**, and
+  the sensors get it through a series diode. The ESP32's AMS1117 does not
+  care, the GY-91 and GPS LDOs do not care, but the MS4525DO's chip VDD is
+  the rail itself and its absolute maximum is 5.5 V — too close for a buck's
+  load-step overshoot. A 1N4004 on the common sensor supply wire drops it to
+  4.65 V at the sensors' ~50 mA (measured 2026-11-04); a Schottky swap
+  (~4.95 V) is on the shopping list. The ESP32 stays in front of the diode so
+  its radio bursts cannot modulate the drop. Limits per device and the
+  diode notes: `parts/README.md`, Power distribution. (The earlier plan of a
+  Mini-360 trimmer module plus a separate HT7833 LDO is superseded; the
+  Mini-360 lesson — "Mini-360" ships as MP2307 *or* MP1584, check the
+  marking — stays true for any future use.)
 - The MS4525DO in the kit is the **DS5 (5 V) variant** — running it at 3.3 V
   is within absolute maximums but outside calibration spec (scale error);
   it stays on the 5 V rail with I2C pulled up to 3.3 V (open-drain, so safe
