@@ -257,7 +257,15 @@ decisions. Keep it updated when the design evolves.
   published message before it reaches the snapshot and QGC.
   Protocol version mismatches are surfaced as one-shot console warnings
   (air → PC checked on every telemetry frame, PC → air reported back via
-  `TELEM_FLAG_VERSION_MISMATCH`).
+  `TELEM_FLAG_VERSION_MISMATCH`). Every integer MAVLink field in
+  `publisher.py` goes through `_u16`/`_u32`/`_i16`/`_i32` (NaN/inf → the
+  field's "unknown" sentinel, else clamped): pymavlink raises
+  `struct.error` on overflow, and on 2026-11-04 one `GPS_RAW_INT` with
+  h_acc = 5303 km (the receiver acquiring a fix) killed the serial reader
+  thread, so the HUD showed `NO TELEMETRY` until a restart. The reader
+  now also drops a frame whose publish fails (`publish_error` event, first
+  three tracebacks printed) and reconnects on any other exception
+  (`reader_error` event) instead of dying.
 - The launch point ("home") and the altimeter calibration are one event, so
   one gate in `cockpitview/home.py` owns both: 25 GPS epochs (~5 s at 5 Hz)
   that are 3D, report `hacc ≤ 5 m`, are below 1 m/s and have a baro sample

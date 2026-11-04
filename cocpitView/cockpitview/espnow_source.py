@@ -34,6 +34,7 @@ import datetime
 import pathlib
 import sys
 import threading
+import traceback
 import time
 
 import serial
@@ -47,6 +48,7 @@ sys.path.insert(0, str(ESP32_DIR / "tools"))
 import board_id  # noqa: E402
 
 RETRY_PERIOD_S = 3.0
+PUBLISH_ERRORS_PRINTED = 3  # tracebacks on the console; every one goes to the log
 COMMAND_PERIOD_S = 0.02  # fixed 50 Hz, silence = link loss on the air side
 STATS_WINDOW_S = 1.0
 TELEMETRY_RATE_HZ = 50.0
@@ -74,6 +76,7 @@ class EspNowSource:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._publisher = TelemetryPublisher(hub)
         self._version_warned = False
+        self._publish_errors = 0
 
     def start(self):
         self._thread.start()
@@ -91,6 +94,11 @@ class EspNowSource:
             except (serial.SerialException, OSError) as err:
                 print(f"serial link lost ({err}) - reconnecting")
                 self._log.event("serial_lost", port=str(port), error=str(err))
+                time.sleep(RETRY_PERIOD_S)
+            except Exception:  # noqa: BLE001 - a dead reader is NO TELEMETRY for the rest of the flight
+                err = traceback.format_exc()
+                print(f"telemetry reader failed, reconnecting:\n{err}")
+                self._log.event("reader_error", port=str(port), error=err)
                 time.sleep(RETRY_PERIOD_S)
 
     def _pump(self, port):
@@ -181,4 +189,11 @@ class EspNowSource:
                 if t is None:
                     continue
                 window_count += 1
-                self._publisher.publish(t, now - start, now, telem_loss_pct)
+                try:
+                    self._publisher.publish(t, now - start, now, telem_loss_pct)
+                except Exception:  # noqa: BLE001 - one bad frame must not end the session
+                    self._publish_errors += 1
+                    err = traceback.format_exc()
+                    self._log.event("publish_error", count=self._publish_errors, error=err)
+                    if self._publish_errors <= PUBLISH_ERRORS_PRINTED:
+                        print(f"telemetry frame dropped ({self._publish_errors}):\n{err}")

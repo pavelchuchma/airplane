@@ -30,6 +30,37 @@ HEARTBEAT_PERIOD_S = 1.0
 RADIO_STATUS_PERIOD_S = 0.5
 BATTERY_STATUS_PERIOD_S = 0.5
 
+UINT16_MAX = 0xFFFF
+UINT32_MAX = 0xFFFFFFFF
+INT16_MAX = 0x7FFF
+INT32_MAX = 0x7FFFFFFF
+
+
+def _int_field(value, lo, hi, unknown):
+    """Scaled float -> MAVLink integer field: `unknown` for NaN, else clamped
+    to the field's range (pymavlink raises struct.error on overflow, which
+    would take the whole source thread down - a GPS acquiring a fix reports
+    kilometres of 1-sigma error, far beyond uint32 millimetres)."""
+    if not math.isfinite(value):
+        return unknown
+    return max(lo, min(hi, int(value)))
+
+
+def _u16(value, unknown=UINT16_MAX):
+    return _int_field(value, 0, UINT16_MAX, unknown)
+
+
+def _u32(value, unknown=0):
+    return _int_field(value, 0, UINT32_MAX, unknown)
+
+
+def _i16(value, unknown=0):
+    return _int_field(value, -INT16_MAX - 1, INT16_MAX, unknown)
+
+
+def _i32(value, unknown=0):
+    return _int_field(value, -INT32_MAX - 1, INT32_MAX, unknown)
+
 
 class TelemetryPublisher:
     """Stateful (failsafe edge, periodic message schedule, cumulative loss);
@@ -130,7 +161,7 @@ class TelemetryPublisher:
             self._hub.mav.vfr_hud_encode(
                 t.ias_mps,
                 0.0 if math.isnan(t.gs_mps) else t.gs_mps,
-                int(math.degrees(t.yaw)) % 360,
+                int(math.degrees(t.yaw)) % 360 if math.isfinite(t.yaw) else 0,
                 0,
                 t.baro_alt_m,
                 t.climb_mps,
@@ -163,15 +194,15 @@ class TelemetryPublisher:
                 mavutil.mavlink.GPS_FIX_TYPE_3D_FIX if fix else mavutil.mavlink.GPS_FIX_TYPE_NO_FIX,
                 t.lat1e7 if fix else 0,
                 t.lon1e7 if fix else 0,
-                0 if math.isnan(t.alt_msl_m) else int(t.alt_msl_m * 1000),
-                65535 if math.isnan(t.hdop) else min(int(t.hdop * 100), 65535),
-                65535,  # epv - the firmware does not report VDOP
-                65535 if math.isnan(t.gs_mps) else int(t.gs_mps * 100),
-                65535 if math.isnan(t.cog_deg) else int(t.cog_deg * 100) % 36000,
+                _i32(t.alt_msl_m * 1000),
+                _u16(t.hdop * 100),
+                UINT16_MAX,  # epv - the firmware does not report VDOP
+                _u16(t.gs_mps * 100),
+                _u32(t.cog_deg * 100) % 36000 if math.isfinite(t.cog_deg) else UINT16_MAX,
                 t.sats,
                 0,  # alt_ellipsoid - not reported
-                0 if math.isnan(t.hacc_m) else int(t.hacc_m * 1000),
-                0 if math.isnan(t.vacc_m) else int(t.vacc_m * 1000),
+                _u32(t.hacc_m * 1000),
+                _u32(t.vacc_m * 1000),
                 0,  # vel_acc - not reported
                 0,  # hdg_acc - not reported
             )
@@ -179,25 +210,26 @@ class TelemetryPublisher:
         if not fix:
             return
 
-        if math.isnan(t.cog_deg) or math.isnan(t.gs_mps):
-            vx = vy = 0
-        else:
+        velocity_known = math.isfinite(t.cog_deg) and math.isfinite(t.gs_mps)
+        if velocity_known:
             cog_rad = math.radians(t.cog_deg)
-            vx = int(t.gs_mps * math.cos(cog_rad) * 100)
-            vy = int(t.gs_mps * math.sin(cog_rad) * 100)
+            vx = _i16(t.gs_mps * math.cos(cog_rad) * 100)
+            vy = _i16(t.gs_mps * math.sin(cog_rad) * 100)
+        else:
+            vx = vy = 0
         # COG only counts as heading when actually moving; UINT16_MAX = unknown
-        moving = not math.isnan(t.gs_mps) and t.gs_mps > 1.0 and not math.isnan(t.cog_deg)
+        moving = velocity_known and t.gs_mps > 1.0
         self._emit(
             self._hub.mav.global_position_int_encode(
                 time_boot_ms,
                 t.lat1e7,
                 t.lon1e7,
-                0 if math.isnan(t.alt_msl_m) else int(t.alt_msl_m * 1000),
-                0 if math.isnan(t.baro_alt_m) else int(t.baro_alt_m * 1000),
+                _i32(t.alt_msl_m * 1000),
+                _i32(t.baro_alt_m * 1000),
                 vx,
                 vy,
-                0 if math.isnan(t.climb_mps) else int(-t.climb_mps * 100),
-                int(t.cog_deg * 100) % 36000 if moving else 65535,
+                _i16(-t.climb_mps * 100),
+                _u32(t.cog_deg * 100) % 36000 if moving else UINT16_MAX,
             )
         )
 
@@ -237,7 +269,7 @@ class TelemetryPublisher:
                 100,  # txbuf [%]
                 0,  # noise - not measured
                 0,  # remnoise
-                min(65535, self.telem_lost_total),  # rxerrors
+                min(UINT16_MAX, self.telem_lost_total),  # rxerrors
                 0,  # fixed
             )
         )
