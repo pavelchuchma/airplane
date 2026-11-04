@@ -295,6 +295,8 @@ def header(path):
 # carry the usual aerospace signs in FLU too.
 _MIRRORED_YAW_MAX_VERSION = 4
 _MIRRORED_YAW_FIELDS = ("yaw", "yawspeed")
+# v8 added sats = 255 for a silent receiver; older logs carry 0 for both
+# that and "acquiring" and cannot be told apart, so nothing to upgrade.
 
 
 def upgrade(frame, version):

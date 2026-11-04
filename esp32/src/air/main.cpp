@@ -1025,13 +1025,18 @@ void loop() {
   }
   lastSampleUs = now;
 
-  static bool gpsChecked = false;
-  if (!gpsChecked && now > 5000000) {
-    gpsChecked = true;
-    if (!gps::alive()) {
+  static bool gpsBootChecked = false;
+  static bool gpsWasAlive = false;
+  bool gpsAlive = gps::alive();
+  if (!gpsBootChecked && now > 5000000) {
+    gpsBootChecked = true;
+    if (!gpsAlive) {
       diag::print("GPS not responding on UART2 - GPS fields will be nan");
     }
+  } else if (gpsBootChecked && gpsAlive != gpsWasAlive) {
+    diag::print(gpsAlive ? "GPS receiver talking again" : "GPS receiver silent for 2 s");
   }
+  gpsWasAlive = gpsAlive;
 
   if (!linkOk) {
     return;
@@ -1074,7 +1079,7 @@ void loop() {
             (mismatch ? TELEM_FLAG_VERSION_MISMATCH : 0) | (s.baroOk ? TELEM_FLAG_BARO_OK : 0) |
             (s.pitotOk ? TELEM_FLAG_PITOT_OK : 0) | (s.imuOk ? TELEM_FLAG_IMU_OK : 0) |
             (s.battOk ? TELEM_FLAG_BATT_OK : 0) | (s.imuCalibrating ? TELEM_FLAG_IMU_CALIBRATING : 0);
-  t.sats = f.sats;
+  t.sats = f.alive ? f.sats : TELEM_SATS_NO_RECEIVER;
   t.timeBootMs = nowMs;
   t.rollRad = s.roll;
   t.pitchRad = s.pitch;

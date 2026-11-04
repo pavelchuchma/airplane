@@ -239,9 +239,19 @@ decisions. Keep it updated when the design evolves.
   read via TinyGPSPlus (`src/air/gps.cpp`). The chip is flash-less, so the
   firmware re-applies config at every boot via raw UBX-CFG-VALSET frames:
   5 Hz nav rate, airborne ≤4g dynamic model, RMC+GGA+GST sentences only (GST
-  carries the receiver's 1-sigma error estimates → hacc/vacc). GPS telemetry
+  carries the receiver's 1-sigma error estimates → hacc/vacc; GSV once a
+  second for the satellites-in-view count). GPS telemetry
   floats are NAN without a fix (sats/hdop stay live); lat/lon travel as
-  int32 deg·1e7 guarded by the `TELEM_FLAG_GPS_FIX` flag.
+  int32 deg·1e7 guarded by the `TELEM_FLAG_GPS_FIX` flag. Since protocol
+  v8 `sats` tells three states apart: satellites *used* with a fix,
+  satellites *in view* (GSV sum over the GP/GL/GA/GB talkers) while
+  acquiring, and `TELEM_SATS_NO_RECEIVER` (255, MAVLink's own
+  `satellites_visible` sentinel) when no NMEA sentence passed its checksum
+  for 2 s — `gps::alive()` is time-based, not "ever heard". The HUD shows
+  `GPS -- 7` while acquiring and a blinking `GPS ---` for a silent
+  receiver (v7 showed `GPS -- 0` for both; `.air.log` gets `GPS receiver
+  silent for 2 s` / `talking again` on the transitions). Bench state out
+  of the airframe is the silent one.
 - cocpitView is the telemetry hub: `cockpitview/espnow_source.py` reads the
   ground bridge's framed serial stream (port resolved by `[env:ground]` MAC;
   `cockpitview/protocol.py` is the Python mirror of `messages.h` + framing),
@@ -428,7 +438,7 @@ decisions. Keep it updated when the design evolves.
   (one window measures neither), and `k` wants reciprocal legs.
 - Next steps: VTX control over IRC Tramp (`doc/todo/003-vtx-tramp-control.md`,
   plan `doc/plans/2026-10-25-vtx-tramp-control.md`; the ULTRA 1600's `IRC`
-  pin is already wired to GPIO26/27, protocol v8 adds desired VTX
+  pin is already wired to GPIO26/27, protocol v9 adds desired VTX
   freq/power to commands and readback + temperature to telemetry);
   second battery calibration point (after the first real flight,
   on the discharged pack); joystick input in

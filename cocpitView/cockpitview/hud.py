@@ -349,10 +349,16 @@ class Hud:
     def draw_gps_status(self, surface, gps):
         """Fix quality + satellite count + 1-sigma horizontal error, e.g.
         "GPS 3D 12 ±4M", in the very bottom-left screen corner (outside the
-        HUD symbology); hidden when the source sends no GPS_RAW_INT at all."""
+        HUD symbology); hidden when the source sends no GPS_RAW_INT at all.
+        "GPS -- 7" is a receiver acquiring (7 satellites in view); a blinking
+        "GPS ---" is a receiver that stopped talking to the air side."""
         if gps is None:
             return
         fix_type, sats, hacc_m = gps
+        if sats is None:
+            if int(self.blink * 2) % 2 == 0:
+                self._text(surface, "GPS ---", (8, self.h - 6), anchor="bottomleft")
+            return
         # MAVLink GPS_FIX_TYPE: 2 = 2D, 3 = 3D, 4+ = differential/RTK
         label = {2: "2D", 3: "3D"}.get(fix_type, "DGPS" if fix_type > 3 else "--")
         text = f"GPS {label} {sats:d}"

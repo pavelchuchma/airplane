@@ -1,4 +1,4 @@
-# VTX control over IRC Tramp (protocol v8)
+# VTX control over IRC Tramp (protocol v9)
 
 Status: **proposed** 2026-10-25, to be implemented in a later session —
 entry point `doc/todo/003-vtx-tramp-control.md`. Hardware is in place: the
@@ -124,7 +124,7 @@ Commands only flow while cocpitView is connected, and the diag lines wait
 in the buffer until then — so the boot lines of a battery-only session are
 not lost, they arrive when the ground side comes up.
 
-## Wire protocol v8
+## Wire protocol v9
 
 `CommandMessage` (20 → 24 B):
 
@@ -152,7 +152,7 @@ constexpr uint8_t VTX_STATUS_REFUSED = 1 << 3;    // last requested change was n
 `flags` has all eight bits taken, hence a separate status byte. Fields are
 only added, names never change (the pandas column rule), `msgId` and
 `version` stay first. `protocol.py` mirrors both structs, `PROTOCOL_VERSION`
-goes to 8; old logs decode by their header as before and `flightlog.upgrade()`
+goes to 9 (v8 was the GPS sats sentinel, 2026-11-04); old logs decode by their header as before and `flightlog.upgrade()`
 stays identity (no semantics changed).
 
 ## cocpitView

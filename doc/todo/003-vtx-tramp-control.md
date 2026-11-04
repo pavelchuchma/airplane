@@ -25,7 +25,7 @@ first; this file is the entry point, the plan is the specification).
    `F`/`P`/`I` only when the readback differs; one set per 500 ms, 5 tries
    then `VTX refused`, range checks from `r`, race lock = no sets,
    failsafe = no VTX action, nothing changed until cocpitView asks.
-2. **Protocol v8** — `CommandMessage` + `vtxFreqMhz` (0 = leave) and
+2. **Protocol v9** — `CommandMessage` + `vtxFreqMhz` (0 = leave) and
    `vtxPowerMw` (0 = pit, 0xFFFF = leave), 20 → 24 B. `TelemetryMessage` +
    `vtxFreqMhz`, `vtxPowerMw`, `vtxTempC`, `vtxStatus` (ALIVE / PIT /
    RACE_LOCK / REFUSED bits), 90 → 96 B. Mirror in `protocol.py`, bump
@@ -67,7 +67,7 @@ first; this file is the entry point, the plan is the specification).
 - Frequency notation in `local.ini`: plain MHz, optionally also band +
   channel (`R4` = 5806) translated with the table in FPV doc §9 — default:
   MHz only, band+channel if cheap.
-- One protocol bump (v8) for command and telemetry together — default: yes.
+- One protocol bump (v9) for command and telemetry together — default: yes.
 - Does the ULTRA persist a Tramp-set configuration across power cycles?
   Unknown; bring-up step 6. Either way the desired state re-applies, the
   answer only decides what the button setting is left at (25 mW or pit).

@@ -55,7 +55,7 @@ class TelemetrySnapshot:
 
     # GPS_RAW_INT (fix quality, even without a fix)
     gps_fix_type: int = 0
-    gps_sats: int = 0
+    gps_sats: int | None = 0  # None = receiver silent (satellites_visible UINT8_MAX)
     gps_hacc_m: float | None = None  # 1-sigma horizontal error [m]
     gps_ts: float = field(default=-math.inf)
 
@@ -260,7 +260,7 @@ def apply_message(s, msg, now):
         s.vfr_ts = now
     elif mtype == "GPS_RAW_INT":
         s.gps_fix_type = msg.fix_type
-        s.gps_sats = msg.satellites_visible
+        s.gps_sats = None if msg.satellites_visible == 255 else msg.satellites_visible
         # MAVLink 2 extension, mm; 0 = unknown (also from MAVLink 1 senders)
         h_acc = getattr(msg, "h_acc", 0)
         s.gps_hacc_m = h_acc / 1000.0 if h_acc else None

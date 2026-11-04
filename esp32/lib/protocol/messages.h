@@ -6,7 +6,7 @@
 
 #include <stdint.h>
 
-constexpr uint8_t PROTOCOL_VERSION = 7;
+constexpr uint8_t PROTOCOL_VERSION = 8;
 
 // Both radios must sit on the same channel; set explicitly at bring-up.
 constexpr uint8_t WIFI_CHANNEL = 1;
@@ -28,13 +28,18 @@ constexpr uint8_t TELEM_FLAG_BATT_OK = 1 << 6;  // cellMv valid (balance lead pr
 // together with IMU_OK.
 constexpr uint8_t TELEM_FLAG_IMU_CALIBRATING = 1 << 7;
 
+// TelemetryMessage.sats when no NMEA sentence arrived for 2 s (receiver
+// unplugged or dead) - MAVLink's GPS_RAW_INT.satellites_visible convention.
+// v7 and older sent 0 for both this and "acquiring".
+constexpr uint8_t TELEM_SATS_NO_RECEIVER = 255;
+
 // Air -> PC, 50 Hz. GPS fields repeat between the 5 Hz GPS updates; floats
 // keep the NAN-as-invalid convention of gps::Fix (survives struct.unpack).
 struct __attribute__((packed)) TelemetryMessage {
   uint8_t msgId;    // MSG_TELEMETRY
   uint8_t version;  // PROTOCOL_VERSION
   uint8_t flags;    // TELEM_FLAG_*
-  uint8_t sats;
+  uint8_t sats;     // used (with a fix) or in view (acquiring), TELEM_SATS_NO_RECEIVER
   uint32_t timeBootMs;
   // Attitude in the aerospace sense: roll positive right wing down, pitch
   // positive nose up, yaw positive *clockwise* seen from above (a compass

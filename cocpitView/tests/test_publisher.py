@@ -8,6 +8,7 @@ import math
 import unittest
 
 import serial
+from pymavlink import mavutil
 
 from cockpitview import espnow_source, flightlog, protocol, publisher
 from cockpitview.telemetry import TelemetryHub
@@ -59,6 +60,16 @@ class IntFields(unittest.TestCase):
         h = hub()
         publisher.TelemetryPublisher(h).publish(frame(yaw=math.radians(-30.5)), 1.0, 1.0, forward=True)
         self.assertEqual(h.snapshot().vfr_heading_deg, 330)
+
+    def test_no_receiver_sentinel_reaches_the_snapshot(self):
+        h = hub()
+        publisher.TelemetryPublisher(h).publish(
+            frame(flags=ALL_OK & ~protocol.TELEM_FLAG_GPS_FIX, sats=protocol.TELEM_SATS_NO_RECEIVER),
+            1.0, 1.0, forward=True,
+        )
+        fix_type, sats, _ = h.snapshot().gps_status
+        self.assertEqual(fix_type, mavutil.mavlink.GPS_FIX_TYPE_NO_FIX)
+        self.assertIsNone(sats)
 
     def test_nan_and_inf_everywhere(self):
         nans = {name: math.nan for name, v in frame()._asdict().items() if isinstance(v, float)}

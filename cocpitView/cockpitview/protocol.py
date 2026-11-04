@@ -28,7 +28,7 @@ Two invariants the flight log (flightlog.py) relies on:
 import collections
 import struct
 
-PROTOCOL_VERSION = 7
+PROTOCOL_VERSION = 8
 
 MSG_TELEMETRY = 0x01
 MSG_COMMAND = 0x02
@@ -44,6 +44,11 @@ TELEM_FLAG_IMU_OK = 1 << 5  # clear = attitude fields are frozen/stale
 TELEM_FLAG_BATT_OK = 1 << 6  # cell*_mv valid (balance lead present + plausible)
 # boot gyro calibration waiting for stillness: attitude 0, rates raw (uncompensated)
 TELEM_FLAG_IMU_CALIBRATING = 1 << 7
+
+# Telemetry.sats when the receiver has been silent for 2 s (unplugged or
+# dead); MAVLink's GPS_RAW_INT.satellites_visible uses the same sentinel.
+# v7 and older sent 0 for both this and "acquiring".
+TELEM_SATS_NO_RECEIVER = 255
 
 COMMAND_CHANNELS = 8
 NEUTRAL_CHANNELS = (0,) * COMMAND_CHANNELS  # surfaces neutral, throttle idle

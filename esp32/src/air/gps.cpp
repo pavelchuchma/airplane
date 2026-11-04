@@ -10,6 +10,9 @@ constexpr int kRxPin = 16;  // <- GPS TX
 constexpr int kTxPin = 17;  // -> GPS RX
 constexpr uint32_t kBaud = 38400;      // Quescan board preset (bare chip: 9600)
 constexpr uint32_t kMaxFixAgeMs = 2000;
+constexpr uint32_t kAliveTimeoutMs = 2000;  // sentences come at the 5 Hz nav rate
+constexpr uint8_t kGsvEveryNthFix = 5;      // GSV once a second
+constexpr uint32_t kGsvMaxAgeMs = 3000;
 
 // UBX-CFG-VALSET key IDs (u-blox M10 interface description UBX-21035062).
 constexpr uint32_t kKeyRateMeas = 0x30210001;    // U2, ms between fixes
@@ -35,6 +38,26 @@ TinyGPSCustom gstAltErrGn(parser, "GNGST", 8);
 TinyGPSCustom gstLatErrGp(parser, "GPGST", 6);
 TinyGPSCustom gstLonErrGp(parser, "GPGST", 7);
 TinyGPSCustom gstAltErrGp(parser, "GPGST", 8);
+
+// GSV term 3 = satellites in view; one GSV set per constellation talker.
+TinyGPSCustom gsvGp(parser, "GPGSV", 3);
+TinyGPSCustom gsvGl(parser, "GLGSV", 3);
+TinyGPSCustom gsvGa(parser, "GAGSV", 3);
+TinyGPSCustom gsvGb(parser, "GBGSV", 3);
+
+uint32_t sentencesSeen = 0;
+uint32_t lastSentenceMs = 0;
+
+uint8_t satsInView() {
+  TinyGPSCustom *talkers[] = {&gsvGp, &gsvGl, &gsvGa, &gsvGb};
+  unsigned total = 0;
+  for (TinyGPSCustom *t : talkers) {
+    if (t->isValid() && t->age() <= kGsvMaxAgeMs) {
+      total += atoi(t->value());
+    }
+  }
+  return total > 254 ? 254 : (uint8_t)total;
+}
 
 // Fresh GST sigma in meters, NAN when missing (empty fields parse to 0).
 float gstMeters(TinyGPSCustom &gn, TinyGPSCustom &gp) {
@@ -89,7 +112,7 @@ void sendBootConfig() {
   off = putCfg(payload, off, kKeyRateMeas, kMeasIntervalMs, 2);
   off = putCfg(payload, off, kKeyDynModel, kDynModelAirborne4g, 1);
   off = putCfg(payload, off, kKeyMsgoutGsaUart1, 0, 1);
-  off = putCfg(payload, off, kKeyMsgoutGsvUart1, 0, 1);
+  off = putCfg(payload, off, kKeyMsgoutGsvUart1, kGsvEveryNthFix, 1);
   off = putCfg(payload, off, kKeyMsgoutGllUart1, 0, 1);
   off = putCfg(payload, off, kKeyMsgoutVtgUart1, 0, 1);
   off = putCfg(payload, off, kKeyMsgoutGstUart1, 1, 1);  // error estimates
@@ -107,14 +130,20 @@ void poll() {
   while (Serial2.available()) {
     parser.encode(Serial2.read());
   }
+  uint32_t passed = parser.passedChecksum();
+  if (passed != sentencesSeen) {
+    sentencesSeen = passed;
+    lastSentenceMs = millis();
+  }
 }
 
 bool alive() {
-  return parser.passedChecksum() > 0;
+  return sentencesSeen > 0 && millis() - lastSentenceMs <= kAliveTimeoutMs;
 }
 
 Fix fix() {
   Fix f{};
+  f.alive = alive();
   f.valid = parser.location.isValid() && parser.location.age() <= kMaxFixAgeMs;
   f.latDeg = f.valid ? parser.location.lat() : NAN;
   f.lonDeg = f.valid ? parser.location.lng() : NAN;
@@ -129,7 +158,11 @@ Fix fix() {
                 ? sqrtf(sigmaLat * sigmaLat + sigmaLon * sigmaLon)
                 : NAN;
   f.vAccM = f.valid ? gstMeters(gstAltErrGn, gstAltErrGp) : NAN;
-  f.sats = parser.satellites.isValid() ? parser.satellites.value() : 0;
+  if (f.valid && parser.satellites.isValid()) {
+    f.sats = parser.satellites.value();
+  } else {
+    f.sats = satsInView();
+  }
   return f;
 }
 
