@@ -14,7 +14,7 @@
 | Resolution | 14-bit, **≈ 1.05 Pa/count** (2 psi spread over 0.8 · 16383 counts — output type A only uses 10–90 % of the range, not all 16383); zero ΔP ≈ count 8192 (0x2000) |
 | Accuracy | ±0.25% span @ 25 °C; total error band ±1.0% span (−10…+85 °C) |
 | Temperature sensor | 11-bit, −50…+150 °C (for true-airspeed correction) |
-| Supply | 5.0 V nominal (chip abs. max 2.7–5.5 V), ~3.5 mA |
+| Supply | 5.0 V nominal (chip abs. max 2.7–5.5 V), ~3.5 mA. On our airframe it gets the 5 V rail through a series diode (4.65 V, see `README.md`, Power distribution); verified to 3.85 V, below |
 | Interface | **I2C, address 0x28 (fixed)**, SCL 100–400 kHz max |
 | Data timing | update 0.5 ms; first data 8.4 ms after power-on |
 | Ports | 1/8" barbed, for 3/32" (≈2.4 mm) ID tubing |
@@ -97,6 +97,22 @@ likewise on the other. Pressurising the pitot's *tip hole* holds too, which rule
 out an internal cross-leak between the total and static chambers inside the pitot
 body — a real defect on cheap tubes, where air bleeds from the total chamber out
 through the static holes and roughly halves dP.
+
+**Under-voltage does not move the zero or the noise (Nov 2026).** The DS5
+die is specified at 5.0 V, but the airframe rail reaches it through a series
+diode and on a long USB cable it sagged to **3.85 V**. Two sessions on that
+supply (`2026-11-04_235507`, `2026-11-05_000459`, airframe at rest indoors):
+zero −3 to −4.5 Pa and filtered-dP sd 0.9–1.2 Pa (sample-to-sample 0.2 Pa),
+against −4.5 to −6 Pa and sd 1.2–1.5 Pa in the battery-powered reference
+(`2026-10-25_104525`); no I2C errors, no dropouts, no extra noise from the
+ESP32's 50 Hz radio bursts on the shared rail. So bench work over USB is
+valid for zero and noise checks. The first of those sessions read −18 Pa for
+its whole length, which turned out to be a breath into the tube during the
+boot zero window, and both show 20 s excursions of +15–20 Pa with the IMU
+perfectly still — a draught through the room. A draught is 1 Pa at
+1.3 m/s, 20 Pa at 5.7 m/s; indoor dP excursions with a quiet gyro are air
+movement, not electronics. Accuracy *above* zero at 3.85 V is not verified
+(the water-column check was at 5 V).
 
 **Do check the static holes are open** (not yet done): blow through the static
 hose with the sensor disconnected, air must come out of the side holes freely.
@@ -194,7 +210,7 @@ ratio is a property of the installation. Same split as ArduPilot's `ARSPD_RATIO`
 
 ## Gotchas
 
-1. **Zero-offset calibration is mandatory** — offset drifts with temperature; offset error reads as "too fast" and auto-throttle then flies dangerously slow. A zero captured *too high* (wind into the tube at boot) hides behind the negative-dP clamp: the HUD still shows a clean 0 while stationary, then stays at 0 until q exceeds the offset. Tell it apart from position error by comparing two speeds — position error is a constant *percentage*, a bad zero is a constant *pressure* (so its percentage explodes at low speed)
+1. **Zero-offset calibration is mandatory** — and it happens in the first second after boot, so hands off the tubing and no blowing while power goes on (a breath in that window cost −18 Pa for a whole session, 2026-11-04). Offset drifts with temperature; offset error reads as "too fast" and auto-throttle then flies dangerously slow. A zero captured *too high* (wind into the tube at boot) hides behind the negative-dP clamp: the HUD still shows a clean 0 while stationary, then stays at 0 until q exceeds the offset. Tell it apart from position error by comparing two speeds — position error is a constant *percentage*, a bad zero is a constant *pressure* (so its percentage explodes at low speed)
 2. **Light-sensitive die** — shield the sensor board from direct light inside the fuselage
 3. **I2C address 0x28 is fixed** — two MS4525 can't share one bus; watch for conflicts
 4. **Pitot placement** — see [Mounting and position error](#mounting-and-position-error). Ignore the folklore "~1 chord ahead of the leading edge": it is a full-scale rule of thumb aimed at a different problem, and at our scale it is actively worse than c/4

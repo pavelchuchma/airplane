@@ -86,7 +86,7 @@ Pack: **3S1P [Samsung INR18650-30Q](battery-samsung-30q.md)**, 12.6 V full / ~11
 
   | Device | Supply path | Limit | At 5.3 V | At 4.65 V |
   |---|---|---|---|---|
-  | MS4525DO | chip VDD directly, 5.0 V nominal | abs. max 5.5 V | legal, no margin | 7 % under nominal, zero recalibrated at every boot |
+  | MS4525DO | chip VDD directly, 5.0 V nominal | abs. max 5.5 V | legal, no margin | 7 % under nominal; zero and noise verified unchanged down to 3.85 V (`pitot-ms4525do.md`) |
   | GY-91 | onboard 3.3 V LDO, spec VIN 3–5 V | LDO input ~6 V | fine | 1.3 V above dropout |
   | GPS Quescan | onboard 3.3 V LDO, spec 3.3–5.0 V | LDO input ~6 V | above the seller's spec, fine | fine |
   | ESP32 devkit 5V pin | AMS1117-3.3 | 15 V in | fine (more headroom) | — (not behind the diode) |
