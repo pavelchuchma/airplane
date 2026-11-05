@@ -441,11 +441,27 @@ decisions. Keep it updated when the design evolves.
   the bogus fit fell outside of while still inside `K_BOUNDS`. Still
   provisional: `GPS_VELOCITY_LAG_S` and the drift PSD need a longer flight
   (one window measures neither), and `k` wants reciprocal legs.
-- Next steps: VTX control over IRC Tramp (`doc/todo/003-vtx-tramp-control.md`,
-  plan `doc/plans/2026-10-25-vtx-tramp-control.md`; the ULTRA 1600's `IRC`
-  pin is already wired to GPIO26/27, protocol v9 adds desired VTX
-  freq/power to commands and readback + temperature to telemetry);
-  second battery calibration point (after the first real flight,
+- VTX control over IRC Tramp is **air-side only so far** (protocol v9,
+  2026-11-06; `doc/todo/003-vtx-tramp-control.md`, plan
+  `doc/plans/2026-10-25-vtx-tramp-control.md`). `src/air/vtx.cpp` speaks
+  Tramp on UART1 (RX GPIO26 via 10 kΩ, TX GPIO27 via 1 kΩ, single wire,
+  own echo dropped): `r` probe every 1 s until the VTX answers (unpowered
+  on a USB-only bench — `absent` is normal there), then `v` every 500 ms,
+  `s` every 2 s, one request in flight, ≥ 200 ms apart. It reconciles the
+  desired state from `CommandMessage.vtxFreqMhz`/`vtxPowerMw` (0 / 0xFFFF
+  = leave, power 0 = pit) against the readback with `F`/`P`/`I`, ≤ 1 set
+  per 500 ms, 10 answered-but-disagreeing tries → `VTX_STATUS_REFUSED`;
+  race lock and failsafe = no sets. Telemetry carries readback freq/power,
+  temperature and `vtxStatus` (96 B). Diag: present, silent/again, every
+  readback change, every set/rejection, hex dump of the first `r`/`v`/`s`
+  reply and of malformed frames (1 per 5 s). **Not verified on the
+  hardware yet** — the Tramp offsets and the pit polarity (`I` 0 = enter,
+  `v` byte 7 = 1 in pit) are from Betaflight's `vtx_tramp.c` and wait for
+  bring-up step 1–3 of the plan. cocpitView only mirrors the structs
+  (`encode_command` sends "leave" for both) — `CommandState`, keys, the
+  HUD `VTX` line and the emulator's fake VTX are the plan's step 3.
+- Next steps: finish VTX control (bring-up on the bench, then cocpitView
+  step 3 of the plan); second battery calibration point (after the first real flight,
   on the discharged pack); joystick input in
   cocpitView (the command channels are already on the wire, neutral for
   now); servos + a real failsafe action on the air side; fly the yaw

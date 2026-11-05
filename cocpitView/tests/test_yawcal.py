@@ -417,6 +417,7 @@ class LogReplayTest(unittest.TestCase):
                 rssi_dbm=-70, cmd_loss_pct=0, tx_fail_pct=0,
                 last_cmd_version=protocol.PROTOCOL_VERSION,
                 cell1_mv=3800, cell2_mv=3790, cell3_mv=3810,
+                vtx_freq_mhz=0, vtx_power_mw=0, vtx_temp_c=protocol.VTX_TEMP_UNKNOWN, vtx_status=0,
             ))))
         path.write_bytes(b"".join(chunks))
         return path

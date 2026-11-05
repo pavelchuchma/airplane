@@ -28,7 +28,7 @@ Two invariants the flight log (flightlog.py) relies on:
 import collections
 import struct
 
-PROTOCOL_VERSION = 8
+PROTOCOL_VERSION = 9
 
 MSG_TELEMETRY = 0x01
 MSG_COMMAND = 0x02
@@ -50,13 +50,25 @@ TELEM_FLAG_IMU_CALIBRATING = 1 << 7
 # v7 and older sent 0 for both this and "acquiring".
 TELEM_SATS_NO_RECEIVER = 255
 
+# Telemetry.vtx_status (v9, IRC Tramp readback of the video transmitter)
+VTX_STATUS_ALIVE = 1 << 0  # a valid Tramp reply within 2 s
+VTX_STATUS_PIT = 1 << 1  # pit mode on (readback)
+VTX_STATUS_RACE_LOCK = 1 << 2  # VTX refuses sets
+VTX_STATUS_REFUSED = 1 << 3  # the requested change was not taken
+VTX_TEMP_UNKNOWN = -128  # Telemetry.vtx_temp_c
+
+# Command VTX fields: "leave as is" sentinels and pit mode
+CMD_VTX_FREQ_LEAVE = 0
+CMD_VTX_POWER_PIT = 0
+CMD_VTX_POWER_LEAVE = 0xFFFF
+
 COMMAND_CHANNELS = 8
 NEUTRAL_CHANNELS = (0,) * COMMAND_CHANNELS  # surfaces neutral, throttle idle
 
-_TELEMETRY = struct.Struct("<BBBBI10f2i6fbBBB3H")
-_COMMAND = struct.Struct("<BBBB8h")
-assert _TELEMETRY.size == 90, "telemetry layout drifted from messages.h"
-assert _COMMAND.size == 20, "command layout drifted from messages.h"
+_TELEMETRY = struct.Struct("<BBBBI10f2i6fbBBB3HHHbB")
+_COMMAND = struct.Struct("<BBBB8hHH")
+assert _TELEMETRY.size == 96, "telemetry layout drifted from messages.h"
+assert _COMMAND.size == 24, "command layout drifted from messages.h"
 
 # LogMessage: this header + 0..LOG_TEXT_MAX bytes of text (no NUL, no newline)
 _LOG_HEADER = struct.Struct("<BBHIH")
@@ -70,11 +82,15 @@ Telemetry = collections.namedtuple(
     "diff_press_pa ias_mps "
     "lat1e7 lon1e7 alt_msl_m gs_mps cog_deg hdop hacc_m vacc_m "
     "rssi_dbm cmd_loss_pct tx_fail_pct last_cmd_version "
-    "cell1_mv cell2_mv cell3_mv",
+    "cell1_mv cell2_mv cell3_mv "
+    "vtx_freq_mhz vtx_power_mw vtx_temp_c vtx_status",
 )
 
 Command = collections.namedtuple(
-    "Command", "msg_id version flags seq " + " ".join(f"ch{i}" for i in range(COMMAND_CHANNELS))
+    "Command",
+    "msg_id version flags seq "
+    + " ".join(f"ch{i}" for i in range(COMMAND_CHANNELS))
+    + " vtx_freq_mhz vtx_power_mw",
 )
 
 LogLine = collections.namedtuple("LogLine", "msg_id version seq time_boot_ms dropped text")
@@ -114,8 +130,10 @@ def encode_log(seq, time_boot_ms, text, dropped=0):
     return _LOG_HEADER.pack(MSG_LOG, PROTOCOL_VERSION, seq & 0xFFFF, time_boot_ms, dropped & 0xFFFF) + data
 
 
-def encode_command(seq, channels=NEUTRAL_CHANNELS, flags=0):
-    return _COMMAND.pack(MSG_COMMAND, PROTOCOL_VERSION, flags, seq & 0xFF, *channels)
+def encode_command(
+    seq, channels=NEUTRAL_CHANNELS, flags=0, vtx_freq_mhz=CMD_VTX_FREQ_LEAVE, vtx_power_mw=CMD_VTX_POWER_LEAVE
+):
+    return _COMMAND.pack(MSG_COMMAND, PROTOCOL_VERSION, flags, seq & 0xFF, *channels, vtx_freq_mhz, vtx_power_mw)
 
 
 def crc16(data):

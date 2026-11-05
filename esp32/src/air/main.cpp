@@ -16,6 +16,10 @@
  *
  * Reads the Quescan G10A-F30 GPS (u-blox M10) over UART2 (see gps.h).
  *
+ * Talks IRC Tramp to the ULTRA 1600 video transmitter over UART1 (vtx.h):
+ * the desired frequency/power from the CommandMessage is reconciled with
+ * the VTX readback, which goes out in telemetry with the VTX temperature.
+ *
  * Telemetry goes out over ESP-NOW as one TelemetryMessage per sample
  * (50 Hz, lib/protocol/messages.h) to the ground bridge, which forwards it
  * framed over USB serial to cocpitView. Commands (CommandMessage, 50 Hz
@@ -50,6 +54,8 @@
  * Wiring battery balance lead -> ESP32 (dividers, see battery.h):
  *   C1 -> 10k -> GPIO35, C2 -> 28k -> GPIO34, C3 -> 56k -> GPIO39,
  *   10k + 100 nF from each pin to GND, B- -> GND (star ground)
+ * Wiring VTX IRC pin -> ESP32 (single wire, see vtx.h):
+ *   IRC -> 10k -> GPIO26 (UART1 RX), IRC -> 1k -> GPIO27 (UART1 TX)
  *
  * The attitude math works in a body frame with X forward, Y right and Z up.
  * The GY-91 is mounted upside down in the airframe (180 deg about body X),
@@ -67,6 +73,7 @@
 #include "i2cbus.h"
 #include "messages.h"
 #include "ms4525do.h"
+#include "vtx.h"
 
 namespace {
 
@@ -997,6 +1004,10 @@ void setup() {
   }
   statsWindowStartMs = millis();
 
+  // The VTX runs off the pack and may be unpowered on a USB bench: the
+  // driver probes it once a second until it answers.
+  vtx::begin();
+
   // Core 0 with the WiFi stack; loop() keeps core 1. Priority 1 = same as
   // loop, it is blocked (not busy) while a transaction stalls.
   xTaskCreatePinnedToCore(sensorTask, "sensors", 6144, nullptr, 1, nullptr, 0);
@@ -1018,6 +1029,7 @@ void loop() {
     // far above the 38400 baud byte rate - no UART overflow between samples).
     gps::poll();
   }
+  vtx::poll(millis());
 
   uint32_t now = micros();
   if (now - lastSampleUs < kSampleIntervalUs) {
@@ -1049,6 +1061,8 @@ void loop() {
   uint32_t cmdMs = lastCmdMs;
   bool mismatch = cmdVersionMismatch;
   uint8_t cmdVersion = lastCmdVersion;
+  uint16_t cmdVtxFreq = lastCommand.vtxFreqMhz;
+  uint16_t cmdVtxPower = lastCommand.vtxPowerMw;
   portEXIT_CRITICAL(&linkMux);
 
   bool failsafe = cmdMs == 0 || nowMs - cmdMs > kFailsafeTimeoutMs;
@@ -1057,6 +1071,13 @@ void loop() {
     wasFailsafe = failsafe;
     // No servos yet - the flag (+ this diagnostic) is the whole action.
     diag::print(failsafe ? "FAILSAFE entered - command link lost" : "FAILSAFE cleared");
+  }
+  // Failsafe takes no VTX action: the video keeps whatever it had until
+  // commands return and say what the state should be.
+  if (failsafe) {
+    vtx::setDesired(CMD_VTX_FREQ_LEAVE, CMD_VTX_POWER_LEAVE);
+  } else {
+    vtx::setDesired(cmdVtxFreq, cmdVtxPower);
   }
 
   SensorSnapshot s;
@@ -1109,6 +1130,12 @@ void loop() {
   t.txFailPct = txFailPct;
   t.lastCmdVersion = cmdVersion;
   memcpy(t.cellMv, s.cellMv, sizeof(t.cellMv));
+  vtx::Status v = vtx::status();
+  t.vtxFreqMhz = v.freqMhz;
+  t.vtxPowerMw = v.powerMw;
+  t.vtxTempC = v.tempC;
+  t.vtxStatus = (v.alive ? VTX_STATUS_ALIVE : 0) | (v.pitMode ? VTX_STATUS_PIT : 0) |
+                (v.raceLock ? VTX_STATUS_RACE_LOCK : 0) | (v.refused ? VTX_STATUS_REFUSED : 0);
 
   esp_now_send(peerMac, (const uint8_t *)&t, sizeof(t));
 

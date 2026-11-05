@@ -6,7 +6,7 @@
 
 #include <stdint.h>
 
-constexpr uint8_t PROTOCOL_VERSION = 8;
+constexpr uint8_t PROTOCOL_VERSION = 9;
 
 // Both radios must sit on the same channel; set explicitly at bring-up.
 constexpr uint8_t WIFI_CHANNEL = 1;
@@ -32,6 +32,18 @@ constexpr uint8_t TELEM_FLAG_IMU_CALIBRATING = 1 << 7;
 // unplugged or dead) - MAVLink's GPS_RAW_INT.satellites_visible convention.
 // v7 and older sent 0 for both this and "acquiring".
 constexpr uint8_t TELEM_SATS_NO_RECEIVER = 255;
+
+// TelemetryMessage.vtxStatus (v9, IRC Tramp readback of the video transmitter)
+constexpr uint8_t VTX_STATUS_ALIVE = 1 << 0;      // a valid Tramp reply within 2 s
+constexpr uint8_t VTX_STATUS_PIT = 1 << 1;        // pit mode on (readback)
+constexpr uint8_t VTX_STATUS_RACE_LOCK = 1 << 2;  // VTX refuses sets
+constexpr uint8_t VTX_STATUS_REFUSED = 1 << 3;    // the requested change was not taken
+constexpr int8_t VTX_TEMP_UNKNOWN = -128;         // TelemetryMessage.vtxTempC
+
+// CommandMessage VTX fields: "leave as is" sentinels and pit mode.
+constexpr uint16_t CMD_VTX_FREQ_LEAVE = 0;
+constexpr uint16_t CMD_VTX_POWER_PIT = 0;
+constexpr uint16_t CMD_VTX_POWER_LEAVE = 0xFFFF;
 
 // Air -> PC, 50 Hz. GPS fields repeat between the 5 Hz GPS updates; floats
 // keep the NAN-as-invalid convention of gps::Fix (survives struct.unpack).
@@ -62,8 +74,12 @@ struct __attribute__((packed)) TelemetryMessage {
   uint8_t txFailPct;                   // % of esp_now_send (telemetry + log) without ACK, last 1 s
   uint8_t lastCmdVersion;              // version byte of the last received command, 0 = none
   uint16_t cellMv[3];                  // per-cell voltage [mV], valid iff TELEM_FLAG_BATT_OK
+  uint16_t vtxFreqMhz;                 // VTX readback, 0 = none yet
+  uint16_t vtxPowerMw;                 // configured power readback, 0 = none yet
+  int8_t vtxTempC;                     // VTX_TEMP_UNKNOWN = none yet
+  uint8_t vtxStatus;                   // VTX_STATUS_*
 };
-static_assert(sizeof(TelemetryMessage) == 90, "wire format changed - bump PROTOCOL_VERSION");
+static_assert(sizeof(TelemetryMessage) == 96, "wire format changed - bump PROTOCOL_VERSION");
 
 constexpr uint8_t COMMAND_CHANNELS = 8;
 
@@ -76,8 +92,10 @@ struct __attribute__((packed)) CommandMessage {
   uint8_t flags;    // reserved (bit0 = ARMED later), 0 for now
   uint8_t seq;      // wrapping counter for duplicate/loss diagnostics
   int16_t channels[COMMAND_CHANNELS];
+  uint16_t vtxFreqMhz;  // desired VTX frequency, CMD_VTX_FREQ_LEAVE = leave as is
+  uint16_t vtxPowerMw;  // desired VTX power, CMD_VTX_POWER_PIT / CMD_VTX_POWER_LEAVE
 };
-static_assert(sizeof(CommandMessage) == 20, "wire format changed - bump PROTOCOL_VERSION");
+static_assert(sizeof(CommandMessage) == 24, "wire format changed - bump PROTOCOL_VERSION");
 
 constexpr uint8_t LOG_TEXT_MAX = 120;
 

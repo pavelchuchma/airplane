@@ -22,6 +22,7 @@ def telemetry_payload(version=protocol.PROTOCOL_VERSION, time_boot_ms=1000, ias=
         lat1e7=500000000, lon1e7=145000000, alt_msl_m=math.nan, gs_mps=13.0, cog_deg=270.0,
         hdop=1.1, hacc_m=2.5, vacc_m=4.0, rssi_dbm=-70, cmd_loss_pct=2, tx_fail_pct=0,
         last_cmd_version=version, cell1_mv=3800, cell2_mv=3790, cell3_mv=3810,
+        vtx_freq_mhz=5800, vtx_power_mw=25, vtx_temp_c=42, vtx_status=protocol.VTX_STATUS_ALIVE,
     )
     return protocol._TELEMETRY.pack(*fields)
 
