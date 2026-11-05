@@ -167,6 +167,7 @@ uint16_t vtxFreqMhz;   // from the last 'v' readback, 0 = none yet
 uint16_t vtxPowerMw;   // configured power from 'v', 0 = none yet
 int8_t vtxTempC;       // from 's', -128 = unknown
 uint8_t vtxStatus;     // VTX_STATUS_* bits
+uint16_t vtxActualPowerMw;  // v10 (96 → 98 B): actual power from 'v', < vtxPowerMw under thermal throttling
 ```
 
 ```c
@@ -224,6 +225,12 @@ stays identity (no semantics changed).
   alive. The line blinks while the requested state differs from the
   readback for more than 2 s (a set is pending or was refused — the
   REFUSED bit makes it say `VTX REFUSED`). Race lock shows as `VTX LOCKED`.
+  Added after bring-up (v10): the line also blinks at ≥ 85 °C
+  (`VTX_TEMP_ALARM_C`; the module read 88 °C at 1600 mW on the open bench
+  without throttling, so its own protection sits higher — this is the
+  operator's margin) and while the module throttles itself, shown as
+  `800/400mW` (configured/actual). The firmware never changes power by
+  itself; the alarm asks the operator to.
 - **Emulator** gains a fake VTX (5800 MHz, power follows the request
   after 0.5 s, temperature 40 °C + a little per power step) so the HUD and
   the key handling can be exercised without the airframe.

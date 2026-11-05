@@ -132,7 +132,9 @@ class TelemetryPublisher:
         )
         # v8 and older logs replay with NaN here (flightlog.upgrade()) - no VTX
         if not math.isnan(t.vtx_status):
-            self._hub.update_vtx(t.vtx_freq_mhz, t.vtx_power_mw, t.vtx_temp_c, t.vtx_status)
+            # v9 logs lack the actual power: take the configured one (no throttling shown)
+            actual = t.vtx_power_mw if math.isnan(t.vtx_actual_power_mw) else t.vtx_actual_power_mw
+            self._hub.update_vtx(t.vtx_freq_mhz, t.vtx_power_mw, t.vtx_temp_c, t.vtx_status, actual)
         if failsafe != self._failsafe:
             self._failsafe = failsafe
             self._emit(

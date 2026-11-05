@@ -1136,6 +1136,7 @@ void loop() {
   t.vtxTempC = v.tempC;
   t.vtxStatus = (v.alive ? VTX_STATUS_ALIVE : 0) | (v.pitMode ? VTX_STATUS_PIT : 0) |
                 (v.raceLock ? VTX_STATUS_RACE_LOCK : 0) | (v.refused ? VTX_STATUS_REFUSED : 0);
+  t.vtxActualPowerMw = v.actualPowerMw;
 
   esp_now_send(peerMac, (const uint8_t *)&t, sizeof(t));
 

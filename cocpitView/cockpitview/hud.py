@@ -387,12 +387,15 @@ class Hud:
         between BAT and LNK; "VTX PIT 42°C" in pit mode, "VTX ---" while the
         air side gets no Tramp replies, "VTX LOCKED ..." under race lock.
         Blinks while a request has gone unmatched for 2 s (a set is on its
-        way or was refused - then the line reads "VTX REFUSED ..."). Hidden
-        when the source never reported a VTX. Returns True when drawn (or
-        blinked off), so the caller can stack the lines above it."""
+        way or was refused - then the line reads "VTX REFUSED ..."), and
+        while the module is hot (>= VTX_TEMP_ALARM_C) or throttling itself
+        - then the power reads "800/400mW" (configured/actual), the cue to
+        step down. Hidden when the source never reported a VTX. Returns
+        True when drawn (or blinked off), so the caller can stack the lines
+        above it."""
         if vtx is None:
             return False
-        if vtx.pending and int(self.blink * 2) % 2 == 1:
+        if (vtx.pending or vtx.hot or vtx.throttled) and int(self.blink * 2) % 2 == 1:
             return True
         if not vtx.alive:
             text = "VTX ---"
@@ -404,6 +407,8 @@ class Hud:
                 parts.append("LOCKED")
             if vtx.pit:
                 parts.append("PIT")
+            elif vtx.throttled:
+                parts.append(f"{vtx.freq_mhz:d} {vtx.power_mw:d}/{vtx.actual_power_mw:d}mW")
             else:
                 parts.append(f"{vtx.freq_mhz:d} {vtx.power_mw:d}mW")
             if vtx.temp_c is not None:

@@ -441,8 +441,8 @@ decisions. Keep it updated when the design evolves.
   the bogus fit fell outside of while still inside `K_BOUNDS`. Still
   provisional: `GPS_VELOCITY_LAG_S` and the drift PSD need a longer flight
   (one window measures neither), and `k` wants reciprocal legs.
-- VTX control over IRC Tramp is **air-side only so far** (protocol v9,
-  2026-11-06; `doc/todo/003-vtx-tramp-control.md`, plan
+- VTX control over IRC Tramp is live (protocol v9, v10 adds the actual
+  power; 2026-11-06; `doc/todo/003-vtx-tramp-control.md`, plan
   `doc/plans/2026-10-25-vtx-tramp-control.md`). `src/air/vtx.cpp` speaks
   Tramp on UART1 (RX GPIO26 via 10 kΩ, TX GPIO27 via 1 kΩ, single wire,
   own echo dropped): `r` probe every 1 s until the VTX answers (unpowered
@@ -452,7 +452,10 @@ decisions. Keep it updated when the design evolves.
   = leave, power 0 = pit) against the readback with `F`/`P`/`I`, ≤ 1 set
   per 500 ms, 10 answered-but-disagreeing tries → `VTX_STATUS_REFUSED`;
   race lock and failsafe = no sets. Telemetry carries readback freq/power,
-  temperature and `vtxStatus` (96 B). Diag: present, silent/again, every
+  temperature, `vtxStatus` and (v10) `vtxActualPowerMw` (98 B — the module
+  throttles itself at an undocumented temperature, which shows as actual
+  < configured; the firmware never lowers power on its own). Diag:
+  present, silent/again, every
   readback change, every set/rejection, hex dump of the first `r`/`v`/`s`
   reply and of malformed frames (1 per 5 s), `VTX temp N C at P mW` per
   5 °C change. **Verified on the airframe 2026-11-06**: offsets as in
@@ -480,7 +483,12 @@ decisions. Keep it updated when the design evolves.
   `hub.update_vtx()` (publisher + emulator's fake VTX alike; v≤8 replays
   show no VTX line); HUD `VTX 5800 25mW 42°C` sits between `BAT` and
   `LNK`, `VTX PIT`, `VTX ---` (no Tramp replies), `VTX REFUSED` /
-  `VTX LOCKED`, blinking while a request is unmatched > 2 s.
+  `VTX LOCKED`, blinking while a request is unmatched > 2 s, while the
+  module is hot (`VTX_TEMP_ALARM_C` = 85, the operator's cue to step down
+  before the module's own protection does) or throttling (`800/400mW`,
+  configured/actual). The emulator's fake VTX warms towards a per-step
+  equilibrium (95 °C at 1600 mW) and halves its power from 90 °C, so both
+  alarms can be seen without the airframe.
 - Next steps: VTX thermal run at 800 mW in the closed fuselage (bring-up
   step 5); second battery
   calibration point (after the first real flight,

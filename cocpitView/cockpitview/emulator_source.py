@@ -24,6 +24,9 @@ HEARTBEAT_PERIOD_S = 1.0
 BATTERY_PERIOD_S = 0.5
 VTX_PERIOD_S = 0.5
 VTX_SET_DELAY_S = 0.5  # a request takes effect after the air side's set + 'v' round trip
+VTX_EQUILIBRIUM_C = (35, 45, 55, 65, 80, 95)  # pit, then per POWER_STEPS_MW entry
+VTX_THERMAL_TAU_S = 20.0
+VTX_THROTTLE_C = 90  # fake thermal protection: half power from here
 RATE_SAMPLE_DT = 0.005  # [s] for numerically differentiating angular rate
 
 # The air side has no magnetometer: its yaw is a gyro integration whose datum
@@ -64,6 +67,7 @@ class EmulatorSource:
         self._vtx_freq = 5800
         self._vtx_power = 25
         self._vtx_pit = False
+        self._vtx_temp = 40.0
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self):
@@ -163,8 +167,10 @@ class EmulatorSource:
 
     def _publish_vtx(self):
         """A VTX that takes every listed request VTX_SET_DELAY_S after it was
-        made (the air side's set + readback round trip) and warms up a few
-        degrees per power step - enough to exercise the keys and the HUD line."""
+        made (the air side's set + readback round trip), warms up towards a
+        per-step equilibrium over ~20 s and throttles to half power from
+        VTX_THROTTLE_C - enough to exercise the keys, the HUD line and its
+        heat/throttling alarms."""
         freq, power, age = self._commands.vtx_request()
         if age >= VTX_SET_DELAY_S:
             if freq != telemetry.VTX_FREQ_LEAVE:
@@ -174,9 +180,13 @@ class EmulatorSource:
             elif power in POWER_STEPS_MW:
                 self._vtx_pit = False
                 self._vtx_power = power
-        temp_c = 40 if self._vtx_pit else 40 + 3 * POWER_STEPS_MW.index(self._vtx_power)
+        target = VTX_EQUILIBRIUM_C[0 if self._vtx_pit else POWER_STEPS_MW.index(self._vtx_power) + 1]
+        self._vtx_temp += (target - self._vtx_temp) * VTX_PERIOD_S / VTX_THERMAL_TAU_S
+        actual = 0 if self._vtx_pit else self._vtx_power
+        if self._vtx_temp >= VTX_THROTTLE_C and not self._vtx_pit:
+            actual = self._vtx_power // 2
         status = telemetry.VTX_STATUS_ALIVE | (telemetry.VTX_STATUS_PIT if self._vtx_pit else 0)
-        self._hub.update_vtx(self._vtx_freq, self._vtx_power, temp_c, status)
+        self._hub.update_vtx(self._vtx_freq, self._vtx_power, round(self._vtx_temp), status, actual)
 
     def _run(self):
         tick_period = 1.0 / self._rate

@@ -33,6 +33,7 @@ def frame(**overrides):
         rssi_dbm=-60, cmd_loss_pct=0, tx_fail_pct=0, last_cmd_version=protocol.PROTOCOL_VERSION,
         cell1_mv=3800, cell2_mv=3800, cell3_mv=3800,
         vtx_freq_mhz=0, vtx_power_mw=0, vtx_temp_c=protocol.VTX_TEMP_UNKNOWN, vtx_status=0,
+        vtx_actual_power_mw=0,
     )
     values.update(overrides)
     return protocol.Telemetry(**values)

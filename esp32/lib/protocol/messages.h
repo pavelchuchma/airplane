@@ -6,7 +6,7 @@
 
 #include <stdint.h>
 
-constexpr uint8_t PROTOCOL_VERSION = 9;
+constexpr uint8_t PROTOCOL_VERSION = 10;
 
 // Both radios must sit on the same channel; set explicitly at bring-up.
 constexpr uint8_t WIFI_CHANNEL = 1;
@@ -78,8 +78,9 @@ struct __attribute__((packed)) TelemetryMessage {
   uint16_t vtxPowerMw;                 // configured power readback, 0 = none yet
   int8_t vtxTempC;                     // VTX_TEMP_UNKNOWN = none yet
   uint8_t vtxStatus;                   // VTX_STATUS_*
+  uint16_t vtxActualPowerMw;           // v10: actual power from 'v' - below vtxPowerMw under thermal throttling
 };
-static_assert(sizeof(TelemetryMessage) == 96, "wire format changed - bump PROTOCOL_VERSION");
+static_assert(sizeof(TelemetryMessage) == 98, "wire format changed - bump PROTOCOL_VERSION");
 
 constexpr uint8_t COMMAND_CHANNELS = 8;
 

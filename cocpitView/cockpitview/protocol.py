@@ -28,7 +28,7 @@ Two invariants the flight log (flightlog.py) relies on:
 import collections
 import struct
 
-PROTOCOL_VERSION = 9
+PROTOCOL_VERSION = 10
 
 MSG_TELEMETRY = 0x01
 MSG_COMMAND = 0x02
@@ -65,9 +65,9 @@ CMD_VTX_POWER_LEAVE = 0xFFFF
 COMMAND_CHANNELS = 8
 NEUTRAL_CHANNELS = (0,) * COMMAND_CHANNELS  # surfaces neutral, throttle idle
 
-_TELEMETRY = struct.Struct("<BBBBI10f2i6fbBBB3HHHbB")
+_TELEMETRY = struct.Struct("<BBBBI10f2i6fbBBB3HHHbBH")
 _COMMAND = struct.Struct("<BBBB8hHH")
-assert _TELEMETRY.size == 96, "telemetry layout drifted from messages.h"
+assert _TELEMETRY.size == 98, "telemetry layout drifted from messages.h"
 assert _COMMAND.size == 24, "command layout drifted from messages.h"
 
 # LogMessage: this header + 0..LOG_TEXT_MAX bytes of text (no NUL, no newline)
@@ -83,7 +83,8 @@ Telemetry = collections.namedtuple(
     "lat1e7 lon1e7 alt_msl_m gs_mps cog_deg hdop hacc_m vacc_m "
     "rssi_dbm cmd_loss_pct tx_fail_pct last_cmd_version "
     "cell1_mv cell2_mv cell3_mv "
-    "vtx_freq_mhz vtx_power_mw vtx_temp_c vtx_status",
+    "vtx_freq_mhz vtx_power_mw vtx_temp_c vtx_status "
+    "vtx_actual_power_mw",  # v10: below vtx_power_mw under thermal throttling
 )
 
 Command = collections.namedtuple(

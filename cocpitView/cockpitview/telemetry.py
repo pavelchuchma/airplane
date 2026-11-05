@@ -26,6 +26,10 @@ from pymavlink import mavutil
 STALE_AFTER_S = 1.0
 # a VTX request is "pending" (HUD blinks) once it has gone unmatched this long
 VTX_PENDING_AFTER_S = 2.0
+# VTX temperature alarm [°C]: the module throttles itself somewhere above
+# the 88 °C seen at 1600 mW on the bench (undocumented); this asks the
+# operator to step down before that, while there is still margin
+VTX_TEMP_ALARM_C = 85
 
 # protocol.VTX_STATUS_* / CMD_VTX_* mirrored here so this module stays free
 # of the wire format (the emulator feeds the same values without protocol.py)
@@ -54,6 +58,16 @@ class VtxState:
     req_freq_mhz: int = VTX_FREQ_LEAVE
     req_power_mw: int = VTX_POWER_LEAVE
     req_age_s: float = math.inf
+    actual_power_mw: int = 0  # what the module really transmits (pit, throttling)
+
+    @property
+    def throttled(self):
+        """The module transmits less than configured - its thermal protection."""
+        return self.alive and not self.pit and 0 < self.actual_power_mw < self.power_mw
+
+    @property
+    def hot(self):
+        return self.alive and self.temp_c is not None and self.temp_c >= VTX_TEMP_ALARM_C
 
     @property
     def pending(self):
@@ -150,6 +164,7 @@ class TelemetrySnapshot:
     vtx_power_mw: int = 0
     vtx_temp_c: int = VTX_TEMP_UNKNOWN
     vtx_status: int = 0
+    vtx_actual_power_mw: int = 0
     vtx_ts: float = field(default=-math.inf)
     vtx_request: tuple = (VTX_FREQ_LEAVE, VTX_POWER_LEAVE, math.inf)
 
@@ -313,6 +328,7 @@ class TelemetrySnapshot:
             req_freq_mhz=req_freq,
             req_power_mw=req_power,
             req_age_s=req_age,
+            actual_power_mw=self.vtx_actual_power_mw,
         )
 
 
@@ -422,9 +438,10 @@ class TelemetryHub:
             s.imu_cal_motion_dps = imu_cal_motion_dps
             s.link_ts = now
 
-    def update_vtx(self, freq_mhz, power_mw, temp_c, status):
+    def update_vtx(self, freq_mhz, power_mw, temp_c, status, actual_power_mw=None):
         """The air side's VTX readback (no MAVLink message fits a video
-        transmitter; the emulator's fake VTX comes in here as well)."""
+        transmitter; the emulator's fake VTX comes in here as well).
+        `actual_power_mw` defaults to the configured power."""
         now = time.monotonic()
         with self._lock:
             s = self._state
@@ -432,6 +449,7 @@ class TelemetryHub:
             s.vtx_power_mw = int(power_mw)
             s.vtx_temp_c = int(temp_c)
             s.vtx_status = int(status)
+            s.vtx_actual_power_mw = int(power_mw if actual_power_mw is None else actual_power_mw)
             s.vtx_ts = now
 
     def snapshot(self):

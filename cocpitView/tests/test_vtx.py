@@ -133,9 +133,34 @@ class SnapshotPath(unittest.TestCase):
             rssi_dbm=-60, cmd_loss_pct=0, tx_fail_pct=0, last_cmd_version=protocol.PROTOCOL_VERSION,
             cell1_mv=0, cell2_mv=0, cell3_mv=0,
             vtx_freq_mhz=5800, vtx_power_mw=25, vtx_temp_c=42, vtx_status=protocol.VTX_STATUS_ALIVE,
+            vtx_actual_power_mw=25,
         )
         values.update(vtx_fields)
         return protocol.Telemetry(**values)
+
+    def test_throttling_and_heat_are_flagged(self):
+        hub = TelemetryHub(qgc_host="127.0.0.1", qgc_port=14599)
+        pub = publisher.TelemetryPublisher(hub)
+        pub.publish(self.frame(vtx_power_mw=800, vtx_actual_power_mw=400, vtx_temp_c=91), 1.0, 1.0)
+        v = hub.snapshot().vtx
+        self.assertTrue(v.throttled)
+        self.assertTrue(v.hot)
+        pub.publish(self.frame(vtx_power_mw=800, vtx_actual_power_mw=800, vtx_temp_c=70), 2.0, 2.0)
+        v = hub.snapshot().vtx
+        self.assertFalse(v.throttled)
+        self.assertFalse(v.hot)
+        # pit mode: actual 0 is not throttling
+        pub.publish(self.frame(vtx_status=protocol.VTX_STATUS_ALIVE | protocol.VTX_STATUS_PIT,
+                               vtx_actual_power_mw=0), 3.0, 3.0)
+        self.assertFalse(hub.snapshot().vtx.throttled)
+
+    def test_v9_log_without_actual_power_shows_no_throttling(self):
+        hub = TelemetryHub(qgc_host="127.0.0.1", qgc_port=14599)
+        t = self.frame(vtx_power_mw=800)._replace(vtx_actual_power_mw=math.nan)
+        publisher.TelemetryPublisher(hub).publish(t, 1.0, 1.0)
+        v = hub.snapshot().vtx
+        self.assertEqual(v.actual_power_mw, 800)
+        self.assertFalse(v.throttled)
 
     def test_readback_reaches_the_snapshot(self):
         hub = TelemetryHub(qgc_host="127.0.0.1", qgc_port=14599)
