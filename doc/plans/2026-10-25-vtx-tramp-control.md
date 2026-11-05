@@ -1,10 +1,14 @@
 # VTX control over IRC Tramp (protocol v9)
 
-Status: **ready to implement** (proposed 2026-10-25, protocol details
-checked against Betaflight's `vtx_tramp.c` source 2026-11-05) — entry point
-`doc/todo/003-vtx-tramp-control.md`. Hardware is in place: the ULTRA
-1600's `IRC` pin is wired to GPIO26 (RX, via 10 kΩ) and GPIO27 (TX, via
-1 kΩ), measured and documented in `doc/parts/fpv-58g-uvc-kit.md` §9.
+Status: **implemented 2026-11-06** (proposed 2026-10-25, checked against
+Betaflight's `vtx_tramp.c` 2026-11-05) — entry point and bring-up results
+in `doc/todo/003-vtx-tramp-control.md`. Verified on the ULTRA 1600: the
+payload offsets below, `I` 0 = enter pit / `v` byte 7 = 1 in pit, sets
+taken on the first try with the `v` confirmation ~250 ms later, a
+Tramp-set configuration persisting across a power cycle. Still open:
+bring-up steps 4 (frequency) and 5 (thermal run at 800 mW). The ULTRA's
+`IRC` pin is wired to GPIO26 (RX, via 10 kΩ) and GPIO27 (TX, via 1 kΩ),
+`doc/parts/fpv-58g-uvc-kit.md` §9.
 
 ## Why
 

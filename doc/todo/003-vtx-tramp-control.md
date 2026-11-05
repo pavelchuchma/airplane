@@ -1,10 +1,10 @@
 # 003 — Control the ULTRA 1600 VTX from cocpitView over IRC Tramp
 
-Status: **open** (2026-10-26; plan reviewed against Betaflight's
-`vtx_tramp.c` and marked ready 2026-11-05). Hardware done, firmware and
-cocpitView not started. Design: `doc/plans/2026-10-25-vtx-tramp-control.md`
-(read it first; this file is the entry point, the plan is the
-specification).
+Status: **implemented, bring-up steps 1–3, 6, 7 passed** (2026-11-06;
+firmware `esp32/src/air/vtx.cpp`, cocpitView `command.py` + `vtx.py`,
+protocol v9). Open: frequency change (step 4) and the thermal run at
+800 mW (step 5). Design: `doc/plans/2026-10-25-vtx-tramp-control.md`;
+results below under *Bring-up log*.
 
 ## What exists
 
@@ -46,6 +46,43 @@ specification).
 4. **Diag** — present/absent/alive transitions, every readback change,
    every set and rejection; plus hex dumps of the first `r`/`v`/`s` reply
    per boot and of malformed frames (1 per 5 s).
+
+## Bring-up log
+
+- **2026-11-06, step 1 passed** (USB + pack, jumper open, air board in the
+  airframe). First boot with the v9 firmware, verbatim from the console:
+
+  ```
+  # VTX rx r: 0F 72 7E 13 37 18 C4 09 00 00 00 00 00 00 1F 00
+  # VTX present: 4990-6199 MHz, max 2500 mW
+  # VTX rx v: 0F 76 A8 16 40 06 00 00 40 06 00 00 00 00 C0 00
+  # VTX 5800 MHz 1600 mW (actual 1600) pit=0 lock=0 -128 C
+  # VTX rx s: 0F 73 00 00 00 00 58 00 00 00 00 00 00 00 CB 00
+  ```
+
+  Offsets confirmed against the plan's table: `r` min/max/maxpower at
+  [2-3]/[4-5]/[6-7] (the module advertises 4990–6199 MHz and 2500 mW —
+  more than the manual's 1600 mW; the cocpitView table stays at the
+  manual), `v` freq 5800 at [2-3], configured 1600 mW at [4-5], control 0,
+  pit 0, actual 1600 mW at [8-9]; `s` temperature at [6-7] = 0x58 =
+  **88 °C** with the VTX button-set to 1600 mW. No echo leaked through
+  (no `bad` lines), checksums verified by hand.
+- **Same evening, steps 2, 3, 6 and 7 passed** (`logs/2026-11-06_001342.air.log`
+  / `.cvlog`). Every `P` set was taken on the first try, the follow-up `v`
+  confirmed it ~250 ms after the set: 1600 → 800 → 1600 → 800 → 400 → 200
+  → 25 mW from the keys. `VTX set pit on` → readback `pit=1`, `set pit
+  off` → `pit=0`: **`I` 0 = enter, `v` byte 7 = 1 in pit — Betaflight's
+  polarity holds on the ULTRA**. Power-cycling the pack (and USB) brought
+  the VTX back at **25 mW: a Tramp-set configuration persists**, so the
+  button setting is irrelevant once set once — but the module *was*
+  delivered at 1600 mW, which is what any new unit will boot at. The
+  `.cvlog` has the `vtx_*` columns in `flightlog csv`, and they carry a
+  real temperature trail: 88 °C at 1600 mW, cooling to 64 °C within
+  ~50 s of dropping to 25 mW. The first `s` right after the VTX's own
+  power-up reads 0 (= "no reading yet", filtered like an echo); the
+  firmware now logs `VTX temp N C at P mW` per 5 °C change. **Pending:**
+  step 4 (frequency change from `local.ini` + receiver retune) and step 5
+  (temperature at 800 mW over minutes, inside the closed fuselage).
 
 ## Constraints to keep in mind
 

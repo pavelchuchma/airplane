@@ -24,9 +24,9 @@ constexpr uint8_t kCmdSetFreq = 'F';
 constexpr uint8_t kCmdSetPower = 'P';
 constexpr uint8_t kCmdSetPit = 'I';
 
-// 'I' payload: Betaflight sends 0 to enter pit mode, 1 to leave it; the 'v'
-// readback byte 7 reads 1 while in pit mode. Confirmed on the ULTRA at
-// bring-up step 3 of the plan.
+// 'I' payload: 0 enters pit mode, 1 leaves it; the 'v' readback byte 7
+// reads 1 while in pit mode (Betaflight's convention, confirmed on the
+// ULTRA 1600 2026-11-06).
 constexpr uint8_t kPitEnter = 0;
 constexpr uint8_t kPitLeave = 1;
 constexpr uint8_t kControlRaceLock = 0x01;  // 'v' byte 6
@@ -41,6 +41,7 @@ constexpr uint32_t kSetFollowUpMs = 200;  // 'v' after a set
 constexpr uint32_t kAliveTimeoutMs = 2000;
 constexpr uint32_t kBadFrameReportMs = 5000;
 constexpr uint8_t kMaxSetAttempts = 10;  // answered-but-disagreeing tries
+constexpr int kTempReportStepC = 5;      // temperature diag line per this much change
 
 // Frame assembler.
 uint8_t rxBuf[kFrameLen];
@@ -74,6 +75,7 @@ uint16_t rbFreq = 0, rbPower = 0, rbActual = 0;
 uint8_t rbControl = 0;
 bool rbPit = false;
 int8_t rbTemp = VTX_TEMP_UNKNOWN;
+int8_t reportedTemp = VTX_TEMP_UNKNOWN;
 bool raceLockReported = false;
 bool dumped[3] = {false, false, false};  // first r / v / s reply per boot
 
@@ -150,8 +152,12 @@ SetRequest chooseSet() {
 }
 
 void reportReadback() {
-  diag::print("VTX %u MHz %u mW (actual %u) pit=%d lock=%d %d C", rbFreq, rbPower, rbActual, rbPit,
-              (rbControl & kControlRaceLock) != 0, rbTemp);
+  char temp[8] = "? C";
+  if (rbTemp != VTX_TEMP_UNKNOWN) {
+    snprintf(temp, sizeof(temp), "%d C", rbTemp);
+  }
+  diag::print("VTX %u MHz %u mW (actual %u) pit=%d lock=%d %s", rbFreq, rbPower, rbActual, rbPit,
+              (rbControl & kControlRaceLock) != 0, temp);
 }
 
 void handleRange(const uint8_t *f) {
@@ -201,9 +207,15 @@ void handleStatus(const uint8_t *f) {
 void handleTemp(const uint8_t *f) {
   int16_t temp = (int16_t)u16At(f, 6);
   if (temp == 0) {
-    return;
+    return;  // echo, or the module has no reading yet (seen right after its power-up)
   }
   rbTemp = temp < -127 ? -127 : temp > 127 ? 127 : (int8_t)temp;
+  // Temperature is otherwise only in telemetry; a coarse trail in the log
+  // shows how the 800/1600 mW steps heat the module inside the fuselage.
+  if (reportedTemp == VTX_TEMP_UNKNOWN || abs(rbTemp - reportedTemp) >= kTempReportStepC) {
+    reportedTemp = rbTemp;
+    diag::print("VTX temp %d C at %u mW%s", rbTemp, rbActual, rbPit ? " (pit)" : "");
+  }
 }
 
 void handleFrame(const uint8_t *f, uint32_t nowMs) {

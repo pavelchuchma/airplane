@@ -454,10 +454,17 @@ decisions. Keep it updated when the design evolves.
   race lock and failsafe = no sets. Telemetry carries readback freq/power,
   temperature and `vtxStatus` (96 B). Diag: present, silent/again, every
   readback change, every set/rejection, hex dump of the first `r`/`v`/`s`
-  reply and of malformed frames (1 per 5 s). **Not verified on the
-  hardware yet** — the Tramp offsets and the pit polarity (`I` 0 = enter,
-  `v` byte 7 = 1 in pit) are from Betaflight's `vtx_tramp.c` and wait for
-  bring-up step 1–3 of the plan. cocpitView side (same day):
+  reply and of malformed frames (1 per 5 s), `VTX temp N C at P mW` per
+  5 °C change. **Verified on the airframe 2026-11-06**: offsets as in
+  the plan's table (`r` says 4990–6199 MHz / 2500 mW — more than the
+  manual), pit polarity `I` 0 = enter / `v` byte 7 = 1 in pit, every set
+  taken first try with the `v` confirmation ~250 ms later, and a
+  Tramp-set configuration **persists across a power cycle** — the module
+  shipped at 1600 mW (88 °C on the bench), one session set it to 25 mW
+  and it has stayed there. The first `s` after the VTX's own power-up
+  reads 0 and is dropped as "no reading yet". Still open: frequency change
+  from `local.ini` and a thermal run at 800 mW. cocpitView side (same
+  day):
   `command.CommandState` is the thread-safe desired state the 50 Hz
   sender encodes (channels neutral + VTX freq/power; the joystick lands
   there later); `vtx.py` steps power through the ULTRA's table pit / 25 /
@@ -471,8 +478,8 @@ decisions. Keep it updated when the design evolves.
   show no VTX line); HUD `VTX 5800 25mW 42°C` sits between `BAT` and
   `LNK`, `VTX PIT`, `VTX ---` (no Tramp replies), `VTX REFUSED` /
   `VTX LOCKED`, blinking while a request is unmatched > 2 s.
-- Next steps: VTX bring-up on the bench (plan steps 1–7: offsets from the
-  hex dumps, pit polarity, power-cycle persistence); second battery
+- Next steps: VTX bring-up steps 4–5 (frequency change + receiver retune,
+  thermal run at 800 mW in the closed fuselage); second battery
   calibration point (after the first real flight,
   on the discharged pack); joystick input in
   cocpitView (the command channels are already on the wire, neutral for
