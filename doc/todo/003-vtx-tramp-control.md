@@ -1,9 +1,9 @@
 # 003 — Control the ULTRA 1600 VTX from cocpitView over IRC Tramp
 
-Status: **implemented, bring-up steps 1–4, 6, 7 passed** (2026-11-06;
-firmware `esp32/src/air/vtx.cpp`, cocpitView `command.py` + `vtx.py`,
-protocol v9; the VTX flies on R2 = 5695 MHz from `local.ini`). Open: the
-thermal run at 800 mW (step 5). Design: `doc/plans/2026-10-25-vtx-tramp-control.md`;
+Status: **done — implemented and brought up, all 7 steps passed**
+(2026-11-06; firmware `esp32/src/air/vtx.cpp`, cocpitView `command.py` +
+`vtx.py`, protocol v9/v10; the VTX flies on R2 = 5695 MHz from
+`local.ini`; frequency and power both persist across a power cycle). Design: `doc/plans/2026-10-25-vtx-tramp-control.md`;
 results below under *Bring-up log*.
 
 ## What exists
@@ -85,9 +85,26 @@ results below under *Bring-up log*.
   in `local.ini`, cocpitView restarted → `VTX set freq 5695` 1.6 s after
   the air boot, readback `VTX 5695 MHz 25 mW (actual 25)` 243 ms later,
   the receiver re-found the picture after auto-search. Idle temperature
-  at 25 mW in the open airframe on the bench: 56–62 °C. **Pending:** a
-  power cycle to confirm the frequency persists like the power did, and
-  step 5 (temperature at 800 mW over minutes, inside the closed fuselage).
+  at 25 mW in the open airframe on the bench: 56–62 °C.
+- **Step 5 passed** (`logs/2026-11-06_003626.air.log` / `.cvlog`, module
+  loose on the bench, still air — the VTX will be mounted outside the
+  airframe in the slipstream, so this is the worst case, not the closed
+  fuselage the plan assumed): 800 mW settles at **~75 °C** (τ ≈ 2.2 min),
+  1600 mW at **~88 °C**, no self-throttling up to there; the HUD alarm
+  (85 °C) blinked as designed and cleared ~30 s after stepping down;
+  cooling 87 → 78 °C in 100 s at 25 mW. Pit mode range ≈ 30 cm (weak RF
+  on the same channel). Numbers and conclusions in
+  `doc/parts/fpv-58g-uvc-kit.md` §9 *Thermal behaviour*. Also seen in
+  that session: one garbled `v` echo (a bus collision, dropped as `bad`,
+  harmless), and two ~0.8 s stalls of the **ground-side** path at
+  boot 274–286 s (PC telemetry loss 33–62 %, air `cmd_loss` 64 %, RSSI
+  steady −75 dBm, `txFail` 0 % — radio ACKs fine, so the ground bridge /
+  USB / PC hiccupped, not RF and not the VTX; unexplained — a burst of
+  five more 0.1–2.7 s gaps followed at boot 1248–1264 s while the
+  airframe was being handled for the power cycle).
+- **Step 6 repeated with the frequency set**: after the pack (and USB)
+  power cycle the VTX came back on **5695 MHz / 25 mW** — both Tramp-set
+  values persist. Bring-up complete.
 
 ## Constraints to keep in mind
 

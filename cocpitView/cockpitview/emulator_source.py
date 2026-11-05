@@ -24,9 +24,11 @@ HEARTBEAT_PERIOD_S = 1.0
 BATTERY_PERIOD_S = 0.5
 VTX_PERIOD_S = 0.5
 VTX_SET_DELAY_S = 0.5  # a request takes effect after the air side's set + 'v' round trip
-VTX_EQUILIBRIUM_C = (35, 45, 55, 65, 80, 95)  # pit, then per POWER_STEPS_MW entry
-VTX_THERMAL_TAU_S = 20.0
-VTX_THROTTLE_C = 90  # fake thermal protection: half power from here
+# Still-air bench values of the ULTRA 1600 (doc/parts/fpv-58g-uvc-kit.md
+# section 9): pit, then per POWER_STEPS_MW entry (200/400 interpolated).
+VTX_EQUILIBRIUM_C = (50, 63, 67, 71, 75, 88)
+VTX_THERMAL_TAU_S = 130.0
+VTX_THROTTLE_C = 90  # fake thermal protection: half power from here (never seen on the real module)
 RATE_SAMPLE_DT = 0.005  # [s] for numerically differentiating angular rate
 
 # The air side has no magnetometer: its yaw is a gyro integration whose datum

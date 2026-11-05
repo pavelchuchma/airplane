@@ -259,6 +259,38 @@ GND is common via the pack; no extra wire needed
   cocpitView over the command link, plus VTX temperature in telemetry
   (the module has thermal protection — this would show how close it runs).
 
+### Thermal behaviour and pit mode (measured 2026-11-06, bench, still air)
+
+Module loose on the bench, antenna on, no airflow, ~22 °C room; temperature
+is the Tramp `s` readback (logged by the air firmware, plan step 5):
+
+| state | equilibrium | notes |
+|---|---|---|
+| pit mode | < 59 °C, still falling | cools ~7 °C/min from 73 °C |
+| 25 mW | **63 °C** | the idle state on the ground |
+| 800 mW | **~75 °C** | 63 → 74 °C in 4.9 min, τ ≈ 2.2 min; stays under the 85 °C HUD alarm |
+| 1600 mW | **~88 °C** | 74 → 87 °C in 7 min; the HUD alarm blinks from 85 °C; **no self-throttling** seen (actual stayed 1600 mW), so the module's own protection sits above 88 °C |
+
+Cooling after 7 min at 1600 mW: 87 → 78 °C in 100 s at 25 mW, 73 → 63 °C
+in 90 s in pit mode. The alarm clears ~30 s after stepping down. These
+are worst-case numbers: the VTX is mounted on the **outside** of the
+airframe in the slipstream, so in flight every step runs cooler; on the
+ground before takeoff (no wind, sun) the bench applies — hence 25 mW or
+pit on the ground, higher steps only airborne. The heatsink's only
+contact with the EPP is the glued face (EPP softens above ~100 °C; use a
+heat-stable adhesive, not hot-melt).
+
+**Pit mode range ≈ 30 cm** on the configured channel (the receiver loses
+the picture at 2 m) — weak RF, not RF off and not a separate pit
+frequency. The module reports its configured power in both `v` power
+fields while in pit mode, so the pit RF level itself is not readable.
+
+Seen once in 20 min: a `v` request echo with its trailing `0x00` garbled
+to `0x1E` — the VTX began its reply while the ESP32's last byte was still
+on the wire. The 1 kΩ series resistor turns such a collision into one
+corrupted byte instead of two outputs fighting; the driver drops the
+frame and the next poll repairs it.
+
 ## Sources
 
 - [Eachine ROTG01 receiver](https://www.eachine.com/Eachine-ROTG01-UVC-OTG-5.8G-150CH-Full-Channel-FPV-Receiver-For-Android-Mobile-Phone-Smartphone-p-843.html)

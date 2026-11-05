@@ -468,9 +468,15 @@ decisions. Keep it updated when the design evolves.
   reads 0 and is dropped as "no reading yet". The channel is **R2 =
   5695 MHz** from `local.ini` (away from the F4 5800 default every new
   VTX ships with; set 2026-11-06, `VTX set freq 5695` taken first try,
-  receiver re-tuned). Idle at 25 mW on the bench: 56–62 °C. Still open: a
-  thermal run at 800 mW in the closed fuselage. cocpitView side (same
-  day):
+  receiver re-tuned; frequency and power both survive a power cycle).
+  Thermal (still air, module loose on the bench — the VTX is mounted
+  **outside** the airframe in the slipstream, so this is the worst case):
+  25 mW idles at 63 °C, 800 mW settles at ~75 °C (τ ≈ 2.2 min), 1600 mW
+  at ~88 °C with no self-throttling seen; the HUD alarm (85 °C) blinks
+  on 1600 mW and clears ~30 s after stepping down. Pit mode ≈ 30 cm
+  range on the same channel. Ground rule that follows: 25 mW or pit on
+  the ground, higher steps only airborne (`doc/parts/fpv-58g-uvc-kit.md`
+  §9). cocpitView side (same day):
   `command.CommandState` is the thread-safe desired state the 50 Hz
   sender encodes (channels neutral + VTX freq/power; the joystick lands
   there later); `vtx.py` steps power through the ULTRA's table pit / 25 /
@@ -489,8 +495,7 @@ decisions. Keep it updated when the design evolves.
   configured/actual). The emulator's fake VTX warms towards a per-step
   equilibrium (95 °C at 1600 mW) and halves its power from 90 °C, so both
   alarms can be seen without the airframe.
-- Next steps: VTX thermal run at 800 mW in the closed fuselage (bring-up
-  step 5); second battery
+- Next steps: second battery
   calibration point (after the first real flight,
   on the discharged pack); joystick input in
   cocpitView (the command channels are already on the wire, neutral for

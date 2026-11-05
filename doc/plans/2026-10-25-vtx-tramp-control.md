@@ -5,8 +5,11 @@ Betaflight's `vtx_tramp.c` 2026-11-05) — entry point and bring-up results
 in `doc/todo/003-vtx-tramp-control.md`. Verified on the ULTRA 1600: the
 payload offsets below, `I` 0 = enter pit / `v` byte 7 = 1 in pit, sets
 taken on the first try with the `v` confirmation ~250 ms later, a
-Tramp-set configuration persisting across a power cycle. Still open:
-bring-up steps 4 (frequency) and 5 (thermal run at 800 mW). The ULTRA's
+Tramp-set configuration persisting across a power cycle; all seven
+bring-up steps passed (results in the todo; thermal numbers in the FPV
+doc §9: 800 mW settles at ~75 °C and 1600 mW at ~88 °C in still air
+without self-throttling — and the VTX is mounted outside the airframe,
+not in the closed fuselage this plan assumed). The ULTRA's
 `IRC` pin is wired to GPIO26 (RX, via 10 kΩ) and GPIO27 (TX, via 1 kΩ),
 `doc/parts/fpv-58g-uvc-kit.md` §9.
 
