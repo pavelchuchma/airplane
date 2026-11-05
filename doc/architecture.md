@@ -294,9 +294,10 @@ otherwise fires with roughly a quarter of the pack remaining.
 3S Li-ion (9.0–12.6 V)
  ├─ ESC (RAY G2 R-20B, 20 A) ─► motor
  │    └─ linear BEC 5 V ──────► servos (PCA9685 V+)
- ├─ buck → 5.3 V ► logic:        (LaskaKit mini SMD step-down, 5 V fixed)
+ ├─ buck → 5.3 V ─ jumper ► logic:   (LaskaKit mini SMD step-down, 5 V fixed;
+ │    │                               jumper open = USB powers the logic)
  │    ├─ ESP32 devkit 5V pin (on-board AMS1117 feeds the ESP32 only)
- │    └─ series diode (1N4004 → 4.65 V; Schottky planned → ~4.95 V)
+ │    └─ series Schottky → 4.96 V on the pack
  │         ├─ MS4525DO (5 V part, on the rail directly)
  │         ├─ GY-91  (onboard 3.3 V LDO)
  │         └─ GPS    (onboard 3.3 V LDO)
@@ -360,6 +361,18 @@ Reasoning behind the choices:
   disconnected under power. A separately pluggable load needs its own
   damper (220 µF electrolytic + SMBJ15A TVS at its input). Details and the
   repair options in `parts/fpv-58g-uvc-kit.md` §8.
+- **A jumper on the logic buck's output lets USB and the pack coexist**
+  (2026-11-05). Open, the devkit's 5V pin — and the sensor rail behind it —
+  is fed from USB VBUS, while the pack still powers ESC, VTX and the balance
+  taps: flashing and serial debugging with the pack in, battery monitoring
+  on the bench, VTX work with the VTX on its real supply. Closed is the
+  flight configuration, and then USB must stay out: the buck's 5.3 V
+  against the host's 5 V is two sources in parallel (the devkit itself says
+  "don't feed both at once"). The jumper sits on the 5 V side, so toggling
+  it is not a hot-plug of the pack node the VTX rule below is about. On USB
+  the sensor rail sits one Schottky drop below VBUS (~4.6 V, estimated),
+  inside the range the pitot was verified at. Forgetting to close it is
+  fail-obvious: the ESP32 stays dark and there is no telemetry.
 - **Sensors do not hang on the devkit's 3.3 V pin.** The devkit's AMS1117 is
   marginal (clone quality, ~1.1 V dropout) and the ESP32's 50 Hz ESP-NOW LR
   bursts pull 300–500 mA spikes through it, which a GPS front end would see
@@ -370,9 +383,9 @@ Reasoning behind the choices:
   the sensors get it through a series diode. The ESP32's AMS1117 does not
   care, the GY-91 and GPS LDOs do not care, but the MS4525DO's chip VDD is
   the rail itself and its absolute maximum is 5.5 V — too close for a buck's
-  load-step overshoot. A 1N4004 on the common sensor supply wire drops it to
-  4.65 V at the sensors' ~50 mA (measured 2026-11-04); a Schottky swap
-  (~4.95 V) is on the shopping list. The ESP32 stays in front of the diode so
+  load-step overshoot. A Schottky on the common sensor supply wire drops it to
+  4.96 V at the sensors' ~50 mA on the pack (measured 2026-11-05; the 1N4004
+  that preceded it gave 4.65 V). The ESP32 stays in front of the diode so
   its radio bursts cannot modulate the drop. Limits per device and the
   diode notes: `parts/README.md`, Power distribution. (The earlier plan of a
   Mini-360 trimmer module plus a separate HT7833 LDO is superseded; the

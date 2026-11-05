@@ -27,13 +27,18 @@ decisions. Keep it updated when the design evolves.
   the ground board it would land in the binary frame stream).
 - I2C driver failure timing on a bare devkit: `pio run -e i2ctest -t upload`
   (flashes the ground board; reflash `-e ground` afterwards).
-- USB power and the battery/BEC must never be live at the same time — but
-  this is **enforced mechanically**: the two connectors physically cannot be
-  plugged in at once. So it is never a precondition to check or ask about
-  before flashing; if USB is in, the battery is out, by construction.
-  A USB-powered boot therefore always prints `# battery absent - data nan for
-  this flight` (the balance lead goes with the pack). Expected, not a
-  regression.
+- A **jumper on the logic buck's output** (added 2026-11-05) separates the
+  pack-side 5.3 V from the devkit's 5V pin. Jumper **open** → USB and the pack
+  may be connected together: USB powers the ESP32 and the sensor rail, the
+  pack feeds ESC/VTX and the balance lead, so battery monitoring reads real
+  cells on a USB boot. Jumper **closed** → the buck powers the logic, which is
+  the flight configuration, and USB must then stay out (the buck's 5.3 V
+  would back-feed USB VBUS — two 5 V sources in parallel). Plugging USB is
+  the user's act, so it is not a question to ask before flashing.
+  Consequences: a USB boot prints `# battery absent - data nan for this
+  flight` only when the pack is out — with the pack in and the jumper open,
+  real cell data is expected; and a battery-only boot with the jumper open
+  leaves the ESP32 unpowered (no telemetry at all), so close it before flight.
 - Which sensors report `absent` at boot depends on where the board is. Out of
   the airframe it is a bare devkit and *everything* reads absent (I2C
   `i2cWriteReadNonStop` error −1 on every address, GPS silent on UART2) — that

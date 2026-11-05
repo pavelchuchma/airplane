@@ -14,7 +14,7 @@
 | Resolution | 14-bit, **≈ 1.05 Pa/count** (2 psi spread over 0.8 · 16383 counts — output type A only uses 10–90 % of the range, not all 16383); zero ΔP ≈ count 8192 (0x2000) |
 | Accuracy | ±0.25% span @ 25 °C; total error band ±1.0% span (−10…+85 °C) |
 | Temperature sensor | 11-bit, −50…+150 °C (for true-airspeed correction) |
-| Supply | 5.0 V nominal (chip abs. max 2.7–5.5 V), ~3.5 mA. On our airframe it gets the 5 V rail through a series diode (4.65 V, see `README.md`, Power distribution); verified to 3.85 V, below |
+| Supply | 5.0 V nominal (chip abs. max 2.7–5.5 V), ~3.5 mA. On our airframe it gets the 5 V rail through a series Schottky (4.96 V, see `README.md`, Power distribution); verified to 3.85 V, below |
 | Interface | **I2C, address 0x28 (fixed)**, SCL 100–400 kHz max |
 | Data timing | update 0.5 ms; first data 8.4 ms after power-on |
 | Ports | 1/8" barbed, for 3/32" (≈2.4 mm) ID tubing |
