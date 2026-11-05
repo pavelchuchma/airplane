@@ -462,8 +462,11 @@ decisions. Keep it updated when the design evolves.
   Tramp-set configuration **persists across a power cycle** — the module
   shipped at 1600 mW (88 °C on the bench), one session set it to 25 mW
   and it has stayed there. The first `s` after the VTX's own power-up
-  reads 0 and is dropped as "no reading yet". Still open: frequency change
-  from `local.ini` and a thermal run at 800 mW. cocpitView side (same
+  reads 0 and is dropped as "no reading yet". The channel is **R2 =
+  5695 MHz** from `local.ini` (away from the F4 5800 default every new
+  VTX ships with; set 2026-11-06, `VTX set freq 5695` taken first try,
+  receiver re-tuned). Idle at 25 mW on the bench: 56–62 °C. Still open: a
+  thermal run at 800 mW in the closed fuselage. cocpitView side (same
   day):
   `command.CommandState` is the thread-safe desired state the 50 Hz
   sender encodes (channels neutral + VTX freq/power; the joystick lands
@@ -478,8 +481,8 @@ decisions. Keep it updated when the design evolves.
   show no VTX line); HUD `VTX 5800 25mW 42°C` sits between `BAT` and
   `LNK`, `VTX PIT`, `VTX ---` (no Tramp replies), `VTX REFUSED` /
   `VTX LOCKED`, blinking while a request is unmatched > 2 s.
-- Next steps: VTX bring-up steps 4–5 (frequency change + receiver retune,
-  thermal run at 800 mW in the closed fuselage); second battery
+- Next steps: VTX thermal run at 800 mW in the closed fuselage (bring-up
+  step 5); second battery
   calibration point (after the first real flight,
   on the discharged pack); joystick input in
   cocpitView (the command channels are already on the wire, neutral for

@@ -1,9 +1,9 @@
 # 003 — Control the ULTRA 1600 VTX from cocpitView over IRC Tramp
 
-Status: **implemented, bring-up steps 1–3, 6, 7 passed** (2026-11-06;
+Status: **implemented, bring-up steps 1–4, 6, 7 passed** (2026-11-06;
 firmware `esp32/src/air/vtx.cpp`, cocpitView `command.py` + `vtx.py`,
-protocol v9). Open: frequency change (step 4) and the thermal run at
-800 mW (step 5). Design: `doc/plans/2026-10-25-vtx-tramp-control.md`;
+protocol v9; the VTX flies on R2 = 5695 MHz from `local.ini`). Open: the
+thermal run at 800 mW (step 5). Design: `doc/plans/2026-10-25-vtx-tramp-control.md`;
 results below under *Bring-up log*.
 
 ## What exists
@@ -80,9 +80,14 @@ results below under *Bring-up log*.
   real temperature trail: 88 °C at 1600 mW, cooling to 64 °C within
   ~50 s of dropping to 25 mW. The first `s` right after the VTX's own
   power-up reads 0 (= "no reading yet", filtered like an echo); the
-  firmware now logs `VTX temp N C at P mW` per 5 °C change. **Pending:**
-  step 4 (frequency change from `local.ini` + receiver retune) and step 5
-  (temperature at 800 mW over minutes, inside the closed fuselage).
+  firmware now logs `VTX temp N C at P mW` per 5 °C change.
+- **Step 4 passed** (`logs/2026-11-06_002256.air.log`): `[vtx] freq = R2`
+  in `local.ini`, cocpitView restarted → `VTX set freq 5695` 1.6 s after
+  the air boot, readback `VTX 5695 MHz 25 mW (actual 25)` 243 ms later,
+  the receiver re-found the picture after auto-search. Idle temperature
+  at 25 mW in the open airframe on the bench: 56–62 °C. **Pending:** a
+  power cycle to confirm the frequency persists like the power did, and
+  step 5 (temperature at 800 mW over minutes, inside the closed fuselage).
 
 ## Constraints to keep in mind
 
