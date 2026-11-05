@@ -36,6 +36,9 @@ class FakeHub:
     def update_link(self, **kwargs):
         self.link_updates.append(kwargs)
 
+    def update_vtx(self, *args):
+        pass
+
     def attitudes(self, forward=None):
         return [
             msg

@@ -15,10 +15,15 @@ from pymavlink import mavutil
 
 from . import flight_profile
 from . import quaternion as quat
+from . import telemetry
+from .command import CommandState
+from .vtx import POWER_STEPS_MW
 from .telemetry import heartbeat
 
 HEARTBEAT_PERIOD_S = 1.0
 BATTERY_PERIOD_S = 0.5
+VTX_PERIOD_S = 0.5
+VTX_SET_DELAY_S = 0.5  # a request takes effect after the air side's set + 'v' round trip
 RATE_SAMPLE_DT = 0.005  # [s] for numerically differentiating angular rate
 
 # The air side has no magnetometer: its yaw is a gyro integration whose datum
@@ -51,9 +56,14 @@ def attitude_at(t):
 class EmulatorSource:
     """Background thread replaying the flight profile into the hub."""
 
-    def __init__(self, hub, rate=20.0):
+    def __init__(self, hub, rate=20.0, commands=None):
         self._hub = hub
         self._rate = rate
+        self._commands = commands if commands is not None else CommandState()
+        # fake VTX: button-configured 5800 MHz / 25 mW, follows requests
+        self._vtx_freq = 5800
+        self._vtx_power = 25
+        self._vtx_pit = False
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self):
@@ -151,11 +161,29 @@ class EmulatorSource:
             )
         )
 
+    def _publish_vtx(self):
+        """A VTX that takes every listed request VTX_SET_DELAY_S after it was
+        made (the air side's set + readback round trip) and warms up a few
+        degrees per power step - enough to exercise the keys and the HUD line."""
+        freq, power, age = self._commands.vtx_request()
+        if age >= VTX_SET_DELAY_S:
+            if freq != telemetry.VTX_FREQ_LEAVE:
+                self._vtx_freq = freq
+            if power == telemetry.VTX_POWER_PIT:
+                self._vtx_pit = True
+            elif power in POWER_STEPS_MW:
+                self._vtx_pit = False
+                self._vtx_power = power
+        temp_c = 40 if self._vtx_pit else 40 + 3 * POWER_STEPS_MW.index(self._vtx_power)
+        status = telemetry.VTX_STATUS_ALIVE | (telemetry.VTX_STATUS_PIT if self._vtx_pit else 0)
+        self._hub.update_vtx(self._vtx_freq, self._vtx_power, temp_c, status)
+
     def _run(self):
         tick_period = 1.0 / self._rate
         start = time.monotonic()
         last_heartbeat = 0.0
         last_battery = 0.0
+        last_vtx = 0.0
         last_print_phase = None
 
         while True:
@@ -169,6 +197,10 @@ class EmulatorSource:
             if now - last_battery >= BATTERY_PERIOD_S:
                 self._publish_battery(t)
                 last_battery = now
+
+            if now - last_vtx >= VTX_PERIOD_S:
+                self._publish_vtx()
+                last_vtx = now
 
             roll, pitch, yaw, rollspeed, pitchspeed, yawspeed = attitude_at(t)
             time_boot_ms = int(t * 1000) & 0xFFFFFFFF

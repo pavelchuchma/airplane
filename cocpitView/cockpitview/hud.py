@@ -368,17 +368,49 @@ class Hud:
 
     # -------------------------------------------------------- link status
 
-    def draw_link_status(self, surface, link):
+    def draw_link_status(self, surface, link, row=1):
         """ESP-NOW link quality, e.g. "LNK -72 U2% D0%" (air-side RSSI in
         dBm, Uplink command loss measured at the air side, Downlink
-        telemetry loss measured PC-side), bottom-right corner one line above
-        the BAT line; hidden when the source reports no link stats at all."""
+        telemetry loss measured PC-side), bottom-right corner `row` lines
+        above the BAT line; hidden when the source reports no link stats."""
         if link is None:
             return
         rssi_dbm, cmd_loss_pct, telem_loss_pct = link
         rssi = "---" if rssi_dbm is None else f"{rssi_dbm:d}"
         text = f"LNK {rssi} U{cmd_loss_pct:d}% D{telem_loss_pct:d}%"
+        self._text(surface, text, (self.w - 8, self.h - 6 - row * self.font.get_height()), anchor="bottomright")
+
+    # --------------------------------------------------------- VTX status
+
+    def draw_vtx_status(self, surface, vtx):
+        """Video transmitter readback, e.g. "VTX 5800 25mW 42°C", bottom-right
+        between BAT and LNK; "VTX PIT 42°C" in pit mode, "VTX ---" while the
+        air side gets no Tramp replies, "VTX LOCKED ..." under race lock.
+        Blinks while a request has gone unmatched for 2 s (a set is on its
+        way or was refused - then the line reads "VTX REFUSED ..."). Hidden
+        when the source never reported a VTX. Returns True when drawn (or
+        blinked off), so the caller can stack the lines above it."""
+        if vtx is None:
+            return False
+        if vtx.pending and int(self.blink * 2) % 2 == 1:
+            return True
+        if not vtx.alive:
+            text = "VTX ---"
+        else:
+            parts = ["VTX"]
+            if vtx.refused:
+                parts.append("REFUSED")
+            elif vtx.race_lock:
+                parts.append("LOCKED")
+            if vtx.pit:
+                parts.append("PIT")
+            else:
+                parts.append(f"{vtx.freq_mhz:d} {vtx.power_mw:d}mW")
+            if vtx.temp_c is not None:
+                parts.append(f"{vtx.temp_c:d}°C")
+            text = " ".join(parts)
         self._text(surface, text, (self.w - 8, self.h - 6 - self.font.get_height()), anchor="bottomright")
+        return True
 
     # ----------------------------------------------------- battery status
 
@@ -495,6 +527,7 @@ class Hud:
         self.draw_wind(surface, snap.yaw_cal)
         self.draw_home_distance(surface, snap.home_dist_m, snap.home_vert_m)
         self.draw_gps_status(surface, snap.gps_status)
-        self.draw_link_status(surface, snap.link_status)
+        vtx_shown = self.draw_vtx_status(surface, snap.vtx)
+        self.draw_link_status(surface, snap.link_status, row=2 if vtx_shown else 1)
         self.draw_battery_status(surface, snap.battery_cells_v)
         self.draw_replay_time(surface, snap.replay_time_s)

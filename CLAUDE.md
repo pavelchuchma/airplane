@@ -457,11 +457,23 @@ decisions. Keep it updated when the design evolves.
   reply and of malformed frames (1 per 5 s). **Not verified on the
   hardware yet** — the Tramp offsets and the pit polarity (`I` 0 = enter,
   `v` byte 7 = 1 in pit) are from Betaflight's `vtx_tramp.c` and wait for
-  bring-up step 1–3 of the plan. cocpitView only mirrors the structs
-  (`encode_command` sends "leave" for both) — `CommandState`, keys, the
-  HUD `VTX` line and the emulator's fake VTX are the plan's step 3.
-- Next steps: finish VTX control (bring-up on the bench, then cocpitView
-  step 3 of the plan); second battery calibration point (after the first real flight,
+  bring-up step 1–3 of the plan. cocpitView side (same day):
+  `command.CommandState` is the thread-safe desired state the 50 Hz
+  sender encodes (channels neutral + VTX freq/power; the joystick lands
+  there later); `vtx.py` steps power through the ULTRA's table pit / 25 /
+  200 / 400 / 800 / 1600 mW — `V` one step down, `Shift+V` up, `P` pit
+  toggle, from the readback on the first press and from the outstanding
+  request after, nothing requested until a key; the channel is config
+  only (`esp32/local.ini` `[vtx] freq = 5800` or `F4`, `--vtx-freq`
+  override, bands A/B/E/F/R validated — the receiver must be retuned
+  too). Readback reaches the snapshot outside MAVLink via
+  `hub.update_vtx()` (publisher + emulator's fake VTX alike; v≤8 replays
+  show no VTX line); HUD `VTX 5800 25mW 42°C` sits between `BAT` and
+  `LNK`, `VTX PIT`, `VTX ---` (no Tramp replies), `VTX REFUSED` /
+  `VTX LOCKED`, blinking while a request is unmatched > 2 s.
+- Next steps: VTX bring-up on the bench (plan steps 1–7: offsets from the
+  hex dumps, pit polarity, power-cycle persistence); second battery
+  calibration point (after the first real flight,
   on the discharged pack); joystick input in
   cocpitView (the command channels are already on the wire, neutral for
   now); servos + a real failsafe action on the air side; fly the yaw

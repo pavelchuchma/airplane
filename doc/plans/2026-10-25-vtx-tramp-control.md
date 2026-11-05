@@ -205,11 +205,13 @@ stays identity (no semantics changed).
   the bare key, the hot one needs the modifier. The steps are a table in
   cocpitView taken from the ULTRA 1600 manual — **pit, 25, 200, 400, 800,
   1600 mW** — Tramp carries power as a plain mW number and `r` reports only
-  the maximum, not the list; the maximum is used to drop steps the module
-  cannot do. Only listed values are ever sent (what the VTX does with an
-  unlisted one is undocumented). The first keypress starts from the current
-  readback, so the operator steps *from what the VTX is actually doing*,
-  never from a stale default, and nothing is requested at all until a key
+  the maximum, not the list; the maximum stays on the air side (it is not
+  in telemetry), which refuses anything above it. Only listed values are
+  ever sent (what the VTX does with an unlisted one is undocumented). The
+  first keypress starts from the current readback, so the operator steps
+  *from what the VTX is actually doing*, never from a stale default
+  (later presses step from the outstanding request, so two quick presses
+  are two steps), and nothing is requested at all until a key
   is pressed. Stepping, not cycling: 1600 mW cannot be reached by one
   extra press from pit. Only the 25 mW step is EU-legal (§7 of the FPV
   doc, and with the 2.8 dBi antenna even that is ~48 mW EIRP).

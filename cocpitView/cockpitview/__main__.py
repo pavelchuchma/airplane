@@ -20,7 +20,10 @@ Usage:
     ./.venv/bin/python -m cockpitview --emulator --no-camera
     ./run.sh --replay logs/2026-08-29_123339.cvlog --replay-start 3:15
 
-Keys: Cmd+Q quits.
+Keys: Cmd+Q quits. V / Shift+V step the video transmitter's power one step
+down / up (pit, 25, 200, 400, 800, 1600 mW - only 25 mW is EU-legal), P
+toggles pit mode. The VTX channel is configuration, not a key
+(esp32/local.ini [vtx] or --vtx-freq) - the receiver has to be retuned too.
 """
 
 import argparse
@@ -30,8 +33,10 @@ import time
 
 import pygame
 
+from . import localconf, vtx
 from .altimeter import BaroCalibrator
 from .camera import Camera
+from .command import CommandState
 from .emulator_source import EmulatorSource
 from .espnow_source import EspNowSource
 from .flightlog import FlightLog
@@ -76,6 +81,7 @@ def main():
         help="directory for the raw telemetry/command logs (default: logs/ next to the package)",
     )
     parser.add_argument("--no-log", action="store_true", help="do not write a .cvlog flight log")
+    parser.add_argument("--vtx-freq", metavar="MHZ|BAND+CH", default=None, help="VTX channel to request over the command link, e.g. 5800 or F4 (default: esp32/local.ini [vtx] freq, else leave the VTX as its button set it)")
     parser.add_argument("--dump-frame", metavar="PATH", help="debug: render for 2 s, save a PNG screenshot to PATH and exit")
     args = parser.parse_args()
 
@@ -90,6 +96,17 @@ def main():
     # would only print a "camera not found" line
     if args.replay and args.camera is None:
         args.no_camera = True
+
+    vtx_freq_text = args.vtx_freq or localconf.vtx_frequency()
+    vtx_freq_mhz = 0
+    if vtx_freq_text is not None:
+        try:
+            vtx_freq_mhz = vtx.parse_frequency(vtx_freq_text)
+        except ValueError as err:
+            parser.error(str(err))
+        print(f"VTX channel request: {vtx_freq_mhz} MHz ({vtx.channel_name(vtx_freq_mhz)})")
+    commands = CommandState(vtx_freq_mhz=vtx_freq_mhz)
+    vtx_control = vtx.VtxControl(commands)
 
     if args.dump_frame:
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -130,7 +147,7 @@ def main():
         processors=[p for p in (home, calibrator, yaw_cal) if p is not None],
     )
     if args.emulator:
-        source = EmulatorSource(telemetry, rate=args.rate)
+        source = EmulatorSource(telemetry, rate=args.rate, commands=commands)
     elif args.replay:
         source = ReplaySource(
             telemetry,
@@ -143,7 +160,7 @@ def main():
             max_gap_s=args.replay_max_gap,
         )
     else:
-        source = EspNowSource(telemetry, port=args.serial_port, baud=args.baud, log=log)
+        source = EspNowSource(telemetry, port=args.serial_port, baud=args.baud, log=log, commands=commands)
     source.start()
     print(f"Forwarding MAVLink to udp:{args.qgc_host}:{args.qgc_port}")
 
@@ -168,6 +185,12 @@ def main():
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_q and event.mod & pygame.KMOD_META:
                         return
+                    # letters, not brackets: they read the same on US and CZ
+                    # layouts; the safe direction (down) is the bare key
+                    if event.key == pygame.K_v:
+                        vtx_control.step(telemetry.snapshot().vtx, +1 if event.mod & pygame.KMOD_SHIFT else -1)
+                    elif event.key == pygame.K_p:
+                        vtx_control.toggle_pit(telemetry.snapshot().vtx)
 
             size = screen.get_size()
             if size != (hud.w, hud.h):  # window resized or fullscreen toggled
@@ -188,6 +211,7 @@ def main():
                 snap.agl_m = terrain.agl_m(*snap.position, snap.amsl_m)
             snap.home_dist_m, snap.home_vert_m = home.offsets_from(snap)
             snap.yaw_cal = yaw_cal.state()
+            snap.vtx_request = commands.vtx_request()
             if replay_clock is not None:
                 snap.replay_time_s = replay_clock()
             hud.draw(screen, snap, dt)

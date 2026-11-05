@@ -10,9 +10,10 @@ baud, see protocol.py):
     bridge delivers is handed to the FlightLog before any filtering
     (flightlog.py), so the log records what arrived, not what we
     understood.
-  - up: CommandMessage at a fixed 50 Hz - neutral channels for now (no
-    joystick yet); the fixed rate is the air side's link-loss detector, so
-    the sender runs whenever the port is open. Each sent payload goes to the
+  - up: CommandMessage at a fixed 50 Hz from command.CommandState (neutral
+    channels - no joystick yet - plus the desired VTX frequency/power);
+    the fixed rate is the air side's link-loss detector, so the sender
+    runs whenever the port is open. Each sent payload goes to the
     FlightLog too.
   - down: LogMessage, the air board's diagnostic lines. Printed to the
     console as `[air] ...`; the FlightLog writes them to `<stem>.air.log`
@@ -40,6 +41,7 @@ import time
 import serial
 
 from . import protocol
+from .command import CommandState
 from .flightlog import FlightLog
 from .publisher import TelemetryPublisher
 
@@ -68,11 +70,12 @@ def find_ground_port():
 class EspNowSource:
     """Background threads bridging the ground board's serial link to the hub."""
 
-    def __init__(self, hub, port=None, baud=460800, log=None):
+    def __init__(self, hub, port=None, baud=460800, log=None, commands=None):
         self._hub = hub
         self._port = port
         self._baud = baud
         self._log = log if log is not None else FlightLog(None)
+        self._commands = commands if commands is not None else CommandState()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._publisher = TelemetryPublisher(hub)
         self._version_warned = False
@@ -125,7 +128,7 @@ class EspNowSource:
             next_send += COMMAND_PERIOD_S
             if stop.wait(max(0.0, next_send - time.monotonic())):
                 return
-            payload = protocol.encode_command(seq)
+            payload = self._commands.encode(seq)
             try:
                 ser.write(protocol.encode_frame(payload))
             except (serial.SerialException, OSError):

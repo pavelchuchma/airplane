@@ -16,3 +16,9 @@ custom_link_lmk = ffeeddccbbaa99887766554433221100
 ; Flying site used as the default centre for terrain_fetch (WGS84 degrees).
 lat = 50.000000
 lon = 15.000000
+
+[vtx]
+; Video transmitter channel cocpitView asks for over the command link, as
+; MHz or band+channel (bands A/B/E/F/R, e.g. F4 = 5800). Leave it out to
+; keep whatever the VTX's button configured. Retune the receiver as well.
+; freq = 5800

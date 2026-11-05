@@ -24,6 +24,50 @@ from dataclasses import dataclass, field
 from pymavlink import mavutil
 
 STALE_AFTER_S = 1.0
+# a VTX request is "pending" (HUD blinks) once it has gone unmatched this long
+VTX_PENDING_AFTER_S = 2.0
+
+# protocol.VTX_STATUS_* / CMD_VTX_* mirrored here so this module stays free
+# of the wire format (the emulator feeds the same values without protocol.py)
+VTX_STATUS_ALIVE = 1 << 0
+VTX_STATUS_PIT = 1 << 1
+VTX_STATUS_RACE_LOCK = 1 << 2
+VTX_STATUS_REFUSED = 1 << 3
+VTX_TEMP_UNKNOWN = -128
+VTX_FREQ_LEAVE = 0
+VTX_POWER_PIT = 0
+VTX_POWER_LEAVE = 0xFFFF
+
+
+@dataclass(frozen=True)
+class VtxState:
+    """What the HUD shows for the video transmitter: the air side's Tramp
+    readback plus the operator's outstanding request."""
+
+    alive: bool
+    freq_mhz: int  # 0 = no readback yet
+    power_mw: int  # configured power, 0 = no readback yet
+    pit: bool
+    race_lock: bool
+    refused: bool
+    temp_c: int | None
+    req_freq_mhz: int = VTX_FREQ_LEAVE
+    req_power_mw: int = VTX_POWER_LEAVE
+    req_age_s: float = math.inf
+
+    @property
+    def pending(self):
+        """True while a request has gone unmatched by the readback for
+        VTX_PENDING_AFTER_S - a set is on its way or was refused."""
+        if self.req_age_s < VTX_PENDING_AFTER_S:
+            return False
+        if self.req_freq_mhz != VTX_FREQ_LEAVE and self.req_freq_mhz != self.freq_mhz:
+            return True
+        if self.req_power_mw == VTX_POWER_PIT:
+            return not self.pit
+        if self.req_power_mw != VTX_POWER_LEAVE:
+            return self.pit or self.req_power_mw != self.power_mw
+        return False
 
 
 @dataclass
@@ -99,6 +143,15 @@ class TelemetrySnapshot:
     # boot gyro calibration waiting for stillness: |raw rates| in deg/s, None otherwise
     imu_cal_motion_dps: float | None = None
     link_ts: float = field(default=-math.inf)
+
+    # VTX readback (Tramp), set via TelemetryHub.update_vtx(); the request
+    # half comes from the main loop (command.CommandState.vtx_request())
+    vtx_freq_mhz: int = 0
+    vtx_power_mw: int = 0
+    vtx_temp_c: int = VTX_TEMP_UNKNOWN
+    vtx_status: int = 0
+    vtx_ts: float = field(default=-math.inf)
+    vtx_request: tuple = (VTX_FREQ_LEAVE, VTX_POWER_LEAVE, math.inf)
 
     now: float = 0.0
 
@@ -242,6 +295,26 @@ class TelemetrySnapshot:
             return None
         return self.imu_cal_motion_dps
 
+    @property
+    def vtx(self):
+        """VtxState, or None when the source never reported a VTX (an old
+        log, a source without one) or the report went stale."""
+        if not self._fresh(self.vtx_ts):
+            return None
+        req_freq, req_power, req_age = self.vtx_request
+        return VtxState(
+            alive=bool(self.vtx_status & VTX_STATUS_ALIVE),
+            freq_mhz=self.vtx_freq_mhz,
+            power_mw=self.vtx_power_mw,
+            pit=bool(self.vtx_status & VTX_STATUS_PIT),
+            race_lock=bool(self.vtx_status & VTX_STATUS_RACE_LOCK),
+            refused=bool(self.vtx_status & VTX_STATUS_REFUSED),
+            temp_c=None if self.vtx_temp_c == VTX_TEMP_UNKNOWN else self.vtx_temp_c,
+            req_freq_mhz=req_freq,
+            req_power_mw=req_power,
+            req_age_s=req_age,
+        )
+
 
 def apply_message(s, msg, now):
     """Applies a MAVLink message to a TelemetrySnapshot (not thread-safe)."""
@@ -348,6 +421,18 @@ class TelemetryHub:
             s.failsafe_active = failsafe
             s.imu_cal_motion_dps = imu_cal_motion_dps
             s.link_ts = now
+
+    def update_vtx(self, freq_mhz, power_mw, temp_c, status):
+        """The air side's VTX readback (no MAVLink message fits a video
+        transmitter; the emulator's fake VTX comes in here as well)."""
+        now = time.monotonic()
+        with self._lock:
+            s = self._state
+            s.vtx_freq_mhz = int(freq_mhz)
+            s.vtx_power_mw = int(power_mw)
+            s.vtx_temp_c = int(temp_c)
+            s.vtx_status = int(status)
+            s.vtx_ts = now
 
     def snapshot(self):
         with self._lock:
