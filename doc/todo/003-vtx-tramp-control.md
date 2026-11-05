@@ -1,8 +1,10 @@
 # 003 — Control the ULTRA 1600 VTX from cocpitView over IRC Tramp
 
-Status: **open** (2026-10-26). Hardware done, firmware and cocpitView not
-started. Design: `doc/plans/2026-10-25-vtx-tramp-control.md` (read it
-first; this file is the entry point, the plan is the specification).
+Status: **open** (2026-10-26; plan reviewed against Betaflight's
+`vtx_tramp.c` and marked ready 2026-11-05). Hardware done, firmware and
+cocpitView not started. Design: `doc/plans/2026-10-25-vtx-tramp-control.md`
+(read it first; this file is the entry point, the plan is the
+specification).
 
 ## What exists
 
@@ -20,11 +22,13 @@ first; this file is the entry point, the plan is the specification).
 1. **Air: `src/air/vtx.{h,cpp}`** — non-blocking Tramp state machine on
    `Serial1` (9600, RX 26, TX 27), polled from `loop()` like `gps::poll()`.
    `r` until answered (present), `v` every 500 ms, `s` every 2 s, one
-   request in flight, 100 ms timeout, own echo dropped by comparing with
-   the request. Desired-state reconciliation from `CommandMessage`: send
-   `F`/`P`/`I` only when the readback differs; one set per 500 ms, 5 tries
-   then `VTX refused`, range checks from `r`, race lock = no sets,
-   failsafe = no VTX action, nothing changed until cocpitView asks.
+   request in flight, 100 ms timeout, ≥ 200 ms between requests, own echo
+   dropped by comparing with the request (plus the non-zero key-field
+   check). Desired-state reconciliation from `CommandMessage`: send
+   `F`/`P`/`I` only when the readback differs and only after the first
+   valid `v`; one set per 500 ms, 10 answered-but-disagreeing tries then
+   `VTX refused`, range checks from `r`, race lock = no sets, failsafe =
+   no VTX action, nothing changed until cocpitView asks.
 2. **Protocol v9** — `CommandMessage` + `vtxFreqMhz` (0 = leave) and
    `vtxPowerMw` (0 = pit, 0xFFFF = leave), 20 → 24 B. `TelemetryMessage` +
    `vtxFreqMhz`, `vtxPowerMw`, `vtxTempC`, `vtxStatus` (ALIVE / PIT /
@@ -45,15 +49,16 @@ first; this file is the entry point, the plan is the specification).
 
 ## Constraints to keep in mind
 
-- **No USB console while the VTX is powered.** The VTX runs off the pack
-  and the pack and USB are mutually exclusive by construction. The whole
-  bring-up is read from `logs/<stem>.air.log` (`tail -f` while cocpitView
-  runs). Flash on USB (VTX unpowered, `VTX absent` is normal), unplug USB,
-  plug the pack, start cocpitView.
-- The Tramp payload offsets in the plan are written from memory of
-  Betaflight's `vtx_tramp.c` — **verify them against the hex dumps before
-  trusting any readback**. The `I` (pit) byte polarity is unknown for this
-  module; the bring-up step 3 of the plan settles it.
+- **Bench: logic jumper open, USB and pack together.** USB powers the
+  ESP32, the pack powers the VTX, the console is live (jumper story in
+  `CLAUDE.md`). USB alone leaves the VTX unpowered — `VTX absent` is
+  normal then. In the field the same `#` lines arrive in
+  `logs/<stem>.air.log`.
+- The Tramp payload offsets in the plan match Betaflight's `vtx_tramp.c`
+  source (checked 2026-11-05) — still confirm them against the ULTRA's hex
+  dumps at bring-up. Pit mode is inverted between the `I` command (0 =
+  enter) and the `v` readback (1 = on) in Betaflight; step 3 of the plan
+  confirms the ULTRA does the same.
 - Only the 25 mW step is EU-legal (FPV doc §7); with the 2.8 dBi antenna
   even that is ~48 mW EIRP. The point of the control line is to make low
   power on the ground the default and higher power a deliberate act.

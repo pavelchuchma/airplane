@@ -1,9 +1,10 @@
 # VTX control over IRC Tramp (protocol v9)
 
-Status: **proposed** 2026-10-25, to be implemented in a later session —
-entry point `doc/todo/003-vtx-tramp-control.md`. Hardware is in place: the
-ULTRA 1600's `IRC` pin is wired to GPIO26 (RX, via 10 kΩ) and GPIO27 (TX,
-via 1 kΩ), measured and documented in `doc/parts/fpv-58g-uvc-kit.md` §9.
+Status: **ready to implement** (proposed 2026-10-25, protocol details
+checked against Betaflight's `vtx_tramp.c` source 2026-11-05) — entry point
+`doc/todo/003-vtx-tramp-control.md`. Hardware is in place: the ULTRA
+1600's `IRC` pin is wired to GPIO26 (RX, via 10 kΩ) and GPIO27 (TX, via
+1 kΩ), measured and documented in `doc/parts/fpv-58g-uvc-kit.md` §9.
 
 ## Why
 
@@ -35,25 +36,35 @@ Single wire, half duplex, 9600 8N1. Every frame is exactly 16 bytes:
 | cmd | request payload | reply payload |
 |---|---|---|
 | `r` (0x72) | — | [2-3] freq min MHz, [4-5] freq max MHz, [6-7] max power mW |
-| `v` (0x76) | — | [2-3] freq MHz, [4-5] configured power mW, [6] control mode (≠ 0 = race lock), [7] pit mode, [8-9] actual power mW |
+| `v` (0x76) | — | [2-3] freq MHz, [4-5] configured power mW, [6] control mode (bit 0 = race lock), [7] pit mode (1 = on), [8-9] actual power mW |
 | `s` (0x73) | — | [6-7] temperature °C (int16) |
 | `F` (0x46) | [2-3] freq MHz | none |
 | `P` (0x50) | [2-3] power mW | none |
-| `I` (0x49) | [2] pit mode | none |
+| `I` (0x49) | [2] **0 = enter pit mode, 1 = leave it** | none |
 
 Set commands are not acknowledged; the follow-up `v` is the confirmation.
-This is the layout Betaflight's `vtx_tramp.c` uses and it is written down
-here from memory of that driver, so **every offset is verified against the
-readback at bring-up** before anything depends on it. Two known traps: the
-`I` byte polarity (Betaflight sends 0 to *enter* pit mode and 1 to leave
-it — check which way the ULTRA reads it), and `v` reporting the configured
-power while the actual one differs in pit mode and under thermal
-throttling.
+This is the layout of Betaflight's `vtx_tramp.c`, read from the source
+(2026-11-05), so the offsets are no longer from memory — the bring-up still
+confirms them on the ULTRA's own hex dumps, because the module, not the
+driver, decides. Three traps, all from that source:
+
+- **Pit mode is inverted between command and readback.** `I` takes 0 to
+  *enter* pit mode and 1 to leave it; the `v` reply's byte 7 is compared
+  by Betaflight directly against its "pit mode wanted" flag, i.e. 1 = pit
+  mode on. Whether the ULTRA agrees is bring-up step 3.
+- `v` reports the *configured* power in [4-5]; the *actual* one in [8-9]
+  differs in pit mode and under thermal throttling. Reconciliation
+  compares against the configured value, the HUD shows it too.
+- A reply is only valid with a non-zero key field: `r` with freq min ≠ 0,
+  `v` with freq ≠ 0, `s` with temperature ≠ 0. Betaflight uses exactly
+  this to tell a reply from its own echoed request (whose payload is
+  zero) — here it is the second check, after the echo comparison below.
 
 With the 1 kΩ series resistor on TX, RX hears every byte the ESP32 sends.
 The parser drops the first received frame that is byte-identical to the
 request just sent; a `v` reply has the same command byte but a different
-payload, so the comparison is safe.
+payload, so the comparison is safe. The non-zero check above catches the
+echo anyway if the comparison ever misses it (a dropped byte, a resync).
 
 ## Air side — `src/air/vtx.{h,cpp}`
 
@@ -65,17 +76,23 @@ trailing `0x00` checked) and steps a small state machine. Nothing blocks:
 a request is written into the UART FIFO (16 B = 17 ms on the wire) and the
 reply is collected on later passes.
 
-**One request in flight at a time**, 100 ms reply timeout. Cadence:
+**One request in flight at a time**, 100 ms reply timeout, and **at least
+200 ms between any two requests** — Betaflight's
+`TRAMP_MIN_REQUEST_PERIOD_US`, the only inter-command spacing the
+reference driver has. Cadence:
 
 1. `r` every 1 s until it is answered → `present`, range and max power
    stored, one diag line `VTX present: 5645-5945 MHz, max 1600 mW`. While
-   unanswered the VTX is `absent` (the bench on USB: the VTX is unpowered)
-   and keeps being probed — unlike the I2C sensors it is not "decided at
-   boot"; the probe is cheap and silent.
+   unanswered the VTX is `absent` (the bench on USB alone: the VTX is
+   unpowered) and keeps being probed — unlike the I2C sensors it is not
+   "decided at boot"; the probe is cheap and silent.
 2. `v` every 500 ms, `s` every 2 s. `alive` = a valid reply within the
    last 2 s; losing it is one diag line, regaining it another.
 3. A set command goes out between polls when the desired state differs
-   from the readback (below), followed by a `v` 100 ms later.
+   from the readback (below), followed by a `v` 200 ms later. **No set
+   before the first valid `v`** — reconciliation has nothing to compare
+   against until then, and Betaflight likewise leaves its OFFLINE/INIT
+   states only after a `v` reply.
 
 **Desired-state reconciliation, no acks.** The 50 Hz `CommandMessage`
 carries what the operator wants; the air side compares it with the last
@@ -91,9 +108,13 @@ This is idempotent and survives packet loss, link loss and an air reboot
 without any handshake: when commands return, the next frame says what the
 state should be. Rules that keep it from misbehaving:
 
-- at most one set per 500 ms, and at most 5 attempts for a given desired
-  value; after that `VTX refused power 1600 mW (reads 800)` once and no
-  more tries until the desired value changes;
+- at most one set per 500 ms, and at most **10 attempts** for a given
+  desired value, counting only attempts whose follow-up `v` arrived and
+  still disagrees — a timed-out `v` is a lost frame, not a refusal
+  (Betaflight allows 20 retries with the comment "some VTX fail to respond
+  to every request"). After that `VTX refused power 1600 mW (reads 800)`
+  once, the REFUSED status bit, and no more tries until the desired value
+  changes;
 - requests outside the `r` range (frequency) or above max power are
   rejected with a diag line and never sent;
 - race lock (`v` control mode ≠ 0) → no sets at all, one diag line;
@@ -106,11 +127,13 @@ absent / alive transitions, every readback change as one line
 `VTX 5800 MHz 25 mW (actual 25) pit=0 42 C`, every set sent and every
 rejection. A clean session with no changes is three lines.
 
-**The radio log is the only debugger.** The VTX runs off the pack and the
-pack and USB are mutually exclusive by construction, so whenever the VTX
-is powered the air board's USB console is unreachable. Everything the
-bring-up needs to see must therefore be a `diag::print` line that reaches
-the `.air.log`, and the firmware dumps raw frames for exactly that:
+**Everything goes through `diag::print`, so it reaches both the USB
+console and the `.air.log`.** On the bench the jumper on the logic buck's
+output (2026-11-05, `CLAUDE.md`) stays open, so USB and the pack are
+connected together: USB powers the ESP32, the pack powers the VTX, and the
+bring-up is read live on the USB console. In the field (jumper closed,
+no USB) the same lines arrive over the radio, so the firmware dumps raw
+frames rather than relying on a terminal:
 
 - the first valid reply of each command type (`r`, `v`, `s`) once per boot
   as hex, `VTX rx r: 0F 72 0D 16 39 17 40 06 ...` — this is how the payload
@@ -161,6 +184,12 @@ stays identity (no semantics changed).
   neutral channels. It gets a small thread-safe `CommandState` (desired
   VTX freq/power now; the joystick channels will land in the same object
   later) that the UI thread writes and the sender thread reads each frame.
+- **Snapshot path.** No MAVLink message carries VTX state, so it reaches
+  `TelemetrySnapshot` outside MAVLink the way the link stats already do
+  (`hub.update_link()`): a `hub.update_vtx(freq, power, temp, status)`
+  called by `publisher._publish_telemetry` and by the emulator alike. The
+  HUD reads only the snapshot, so the live link, the emulator and replay
+  share one display path.
 - **Operator control.** Frequency comes from configuration only — a
   channel change means retuning the receiver as well, so it is not a
   flight-time action: `[vtx] freq_mhz = 5800` in `esp32/local.ini`
@@ -200,11 +229,13 @@ stays identity (no semantics changed).
 
 ## Bring-up (bench, pack powered, receiver on)
 
-Procedure for every step: flash on USB (VTX unpowered — `VTX absent` is the
-expected bench state), unplug USB, plug the pack, start cocpitView and read
-`tail -f logs/<stem>.air.log`. The air board reboots on the power change,
-so the probe-forever behaviour of step 1 under *Air side* is what makes the
-VTX show up at all.
+Procedure for every step: logic jumper **open**, USB and the pack both
+connected — USB flashes and powers the ESP32, the pack powers the VTX. The
+`#` lines are read straight from the USB console (`pio device monitor`),
+and the same lines land in `logs/<stem>.air.log` once cocpitView is up.
+With the pack out the VTX is unpowered and `VTX absent` is the expected
+state; plugging it in later is what the probe-forever behaviour of step 1
+under *Air side* is for.
 
 1. Pack in; expect `VTX present: ...` within a second and the `VTX rx r/v/s`
    hex dumps, then a readback line matching the LED-set state. Check the
@@ -212,7 +243,9 @@ VTX show up at all.
    every later step lie.
 2. Request 25 mW from cocpitView: red LED blink count, receiver RSSI and
    the readback must agree. Repeat for 200 mW.
-3. Pit mode on and off: fixes the `I` polarity; note it in the code.
+3. Pit mode on and off: confirms the `I` polarity (0 = enter) and the
+   readback sense of `v` byte 7 (1 = on) on this module; note both in the
+   code.
 4. Frequency change to a neighbouring channel; retune the receiver;
    change back.
 5. Temperature: plausible at rest, rising at 800 mW.
